@@ -35,7 +35,8 @@ Home Assistant can already control the hub through the built-in **Logitech Harmo
 
 - **When it updates the hub:** the device list goes to the hub on every start, when the options change, and when an entity's device would change. The hub saves nothing for an unchanged list.
 - **A device keeps every command and input it had**, so a player that's switched off never loses inputs that an activity uses.
-- **Removing an entity** takes its device off the hub, unless an activity or button still uses it.
+- **On a Harmony Touch, each device gets its own screen**: Devices, then the device. The hub builds it from the device's commands. A command named like a hard key goes on that key (VolumeUp, Mute, Play…), a light's BrightnessUp/Down go on the volume keys, and every other command is an on-screen button. The screen follows the device when its commands change. This needs a Melodious hub with Touch device screens (`POST /api/device-screen`); an older hub adds the device without a screen.
+- **Removing an entity** takes its device and its Touch screen off the hub, unless an activity or button still uses it.
 
 Design notes and the hub side are in [docs/HOME_ASSISTANT.md](https://github.com/schlambos/harmony-hub-control/blob/main/docs/HOME_ASSISTANT.md).
 
