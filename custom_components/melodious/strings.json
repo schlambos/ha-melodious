@@ -25,10 +25,16 @@
     "step": {
       "init": {
         "title": "Devices on the hub",
-        "description": "Each entity becomes a device on the hub. Removing one takes it off the hub, unless an activity or button still uses it.",
+        "description": "Pick whole devices to merge into one Harmony device each, and/or single entities. The next step reviews each device. Removing one takes it off the hub, unless an activity or button still uses it.",
         "data": {
-          "entities": "Entities"
+          "devices": "Devices (merged into one Harmony device each)",
+          "entities": "Single entities"
         }
+      },
+      "review": {
+        "title": "Review merged devices",
+        "description": "Per device: which entities to merge, and which commands to leave off the hub.",
+        "data": {}
       }
     }
   }

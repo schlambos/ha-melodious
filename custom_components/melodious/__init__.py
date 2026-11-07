@@ -24,8 +24,16 @@ from homeassistant.helpers.event import async_call_later, async_track_state_chan
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 
-from .const import CONF_ENTITIES, CONF_HA_URL, CONF_WEBHOOK_ID, DOMAIN, PUSH_DELAY_SECONDS, RETRY_SECONDS
-from .devices import Entity, allowed_values, build_device_set, service_call
+from .const import CONF_DEVICES, CONF_ENTITIES, CONF_HA_URL, CONF_WEBHOOK_ID, DOMAIN, PUSH_DELAY_SECONDS, RETRY_SECONDS
+from .devices import (
+    DeviceGroup,
+    Entity,
+    allowed_values,
+    build_device_set,
+    build_merged_set,
+    resolve_v2_command,
+    service_call,
+)
 from .hub import HubClient, HubError, HubRefused
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,11 +75,18 @@ class MelodiousRuntime:
         self.allowed = allowed_values(self.sent or {})
 
     def entities(self) -> list[Entity]:
+        from homeassistant.helpers import entity_registry as er
+
+        registry = er.async_get(self.hass)
         out = []
         for entity_id in self.entry.options.get(CONF_ENTITIES, []):
             state = self.hass.states.get(entity_id)
+            reg_entry = registry.async_get(entity_id)
+            device_id = reg_entry.device_id if reg_entry else None
+            platform = reg_entry.platform if reg_entry else None
             if state is None:
-                out.append(Entity(entity_id, entity_id, available=False))
+                out.append(Entity(entity_id, entity_id, available=False,
+                                 device_id=device_id, platform=platform))
                 continue
             out.append(
                 Entity(
@@ -81,12 +96,82 @@ class MelodiousRuntime:
                     available=state.state != STATE_UNAVAILABLE,
                     supported_features=int(state.attributes.get("supported_features") or 0),
                     attributes=dict(state.attributes),
+                    device_id=device_id,
+                    platform=platform,
                 )
             )
         return out
 
+    def groups(self) -> list[DeviceGroup]:
+        """The selected HA devices expanded through the entity registry."""
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+
+        dev_reg = dr.async_get(self.hass)
+        ent_reg = er.async_get(self.hass)
+        from homeassistant.helpers.entity_registry import async_entries_for_device
+
+        groups = []
+        for item in self.entry.options.get(CONF_DEVICES, []):
+            device_id = item.get("device_id")
+            device = dev_reg.async_get(device_id) if device_id else None
+            name = (device.name_by_user or device.name) if device else item.get("device_id")
+            manufacturer = device.manufacturer if device else None
+            model = device.model if device else None
+            wanted = set(item.get("entities") or [])
+            members = []
+            for reg_entry in async_entries_for_device(ent_reg, device_id):
+                if wanted and reg_entry.entity_id not in wanted:
+                    continue
+                state = self.hass.states.get(reg_entry.entity_id)
+                members.append(Entity(
+                    reg_entry.entity_id,
+                    state.name if state else reg_entry.entity_id,
+                    available=False if state is None else state.state != STATE_UNAVAILABLE,
+                    supported_features=int((state.attributes.get("supported_features") or 0))
+                    if state else 0,
+                    attributes=dict(state.attributes) if state else {},
+                    device_id=device_id,
+                    platform=reg_entry.platform,
+                ))
+            groups.append(DeviceGroup(device_id, name or device_id, manufacturer, model, members))
+        return groups
+
+    def _previous(self) -> dict[str, dict]:
+        """The last sent set indexed by key and by entity."""
+        previous: dict[str, dict] = {}
+        for device in (self.sent or {}).get("devices", []):
+            if device.get("key"):
+                previous[device["key"]] = device
+                for item in device.get("entities", []):
+                    previous.setdefault(item["entity"], device)
+            elif device.get("entity"):
+                previous[device["entity"]] = device
+        return previous
+
+    def _device_keys(self) -> dict[str, str]:
+        keys = {}
+        for item in self.entry.options.get(CONF_DEVICES, []):
+            if item.get("device_id") and item.get("key"):
+                keys[item["device_id"]] = item["key"]
+        return keys
+
+    def _disabled(self) -> dict[str, set[str]]:
+        return {
+            item["device_id"]: set(item.get("disabled_commands") or [])
+            for item in self.entry.options.get(CONF_DEVICES, [])
+            if item.get("device_id")
+        }
+
     def _build(self) -> dict:
-        previous = {d["entity"]: d for d in (self.sent or {}).get("devices", [])}
+        previous = self._previous()
+        groups = self.groups()
+        if groups:
+            device_set, _ = build_merged_set(
+                self.webhook_url, groups, self._device_keys(),
+                self._disabled(), previous, self.taken_names,
+            )
+            return device_set
         return build_device_set(self.webhook_url, self.entities(), previous, self.taken_names)
 
     async def async_push(self, force: bool = False) -> None:
@@ -95,7 +180,29 @@ class MelodiousRuntime:
         async with self._lock:
             try:
                 self.taken_names = await self.client.device_names()
-                device_set = self._build()
+                groups = self.groups()
+                if groups:
+                    try:
+                        features = await self.client.features()
+                    except HubError:
+                        features = {"ha-devices-v2"}
+                    if "ha-devices-v2" not in features:
+                        persistent_notification.async_create(
+                            self.hass,
+                            "Update Melodious on the hub to merge devices; "
+                            "sending one device per entity until then.",
+                            title="Melodious",
+                            notification_id=f"{DOMAIN}_{self.entry.entry_id}_v2",
+                        )
+                        flat = [m for g in groups for m in g.entities]
+                        device_set = build_device_set(
+                            self.webhook_url, flat, self._previous(), self.taken_names)
+                    else:
+                        persistent_notification.async_dismiss(
+                            self.hass, f"{DOMAIN}_{self.entry.entry_id}_v2")
+                        device_set = self._build()
+                else:
+                    device_set = self._build()
                 if device_set == self.sent and not force:
                     return
                 result = await self.client.commit(device_set)
@@ -139,19 +246,56 @@ class MelodiousRuntime:
         if self._timer is None and self.sent is not None and self._build() != self.sent:
             self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
 
+    def _find_device(self, device_key: str) -> dict | None:
+        for device in (self.sent or {}).get("devices", []):
+            if device.get("key") == device_key or device.get("entity") == device_key:
+                return device
+        return None
+
     @callback
-    def run(self, entity_id: str, value: str) -> None:
+    def run(self, device_key: str, value: str) -> None:
         """Run one webhook call, without waiting: the hub drops IP commands queued over 500 ms."""
-        if value not in self.allowed.get(entity_id, set()):
-            _LOGGER.warning("Ignoring %s for %s: not a command Melodious set up", value, entity_id)
+        if value not in self.allowed.get(device_key, set()):
+            _LOGGER.warning("Ignoring %s for %s: not a command Melodious set up", value, device_key)
             return
+        device = self._find_device(device_key)
+        entity_id, action, command_name = device_key, value, value
+        if device is not None and device.get("key"):
+            resolved = resolve_v2_command(device, value)
+            if resolved is None:
+                _LOGGER.warning("Ignoring %s for %s: unknown alias", value, device_key)
+                return
+            entity_id, action = resolved
+            command_name = next(
+                (c["name"] for c in device.get("commands", []) if c.get("value") == value),
+                value,
+            )
         state = self.hass.states.get(entity_id)
-        call = service_call(entity_id, value, dict(state.attributes) if state else {})
+        attributes = dict(state.attributes) if state else {}
+        platform = next(
+            (e.platform for e in self.entities() + [
+                m for g in self.groups() for m in g.entities
+            ] if e.entity_id == entity_id),
+            None,
+        )
+        call = service_call(entity_id, action, attributes, platform)
         if call is None:
             _LOGGER.warning("Ignoring %s for %s: no service for it", value, entity_id)
             return
         domain, service, data = call
         _LOGGER.debug("Hub sent %s for %s: %s.%s", value, entity_id, domain, service)
+        self.hass.bus.async_fire(
+            "melodious.command_received",
+            {
+                "hub": self.entry.data.get("host"),
+                "device": device.get("name") if device else device_key,
+                "device_key": device.get("key", device.get("entity")) if device else device_key,
+                "entity_id": entity_id,
+                "command": command_name,
+                "action": action,
+                "value": value,
+            },
+        )
         self.hass.async_create_task(self.hass.services.async_call(domain, service, data, blocking=False))
 
 

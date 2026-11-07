@@ -56,6 +56,14 @@ class HubClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             raise HubError(f"could not reach the hub: {err}") from err
 
+    async def features(self) -> set[str]:
+        """Feature flags from GET /api/version; empty when the hub predates it."""
+        try:
+            version = await self._request("GET", "/api/version")
+        except HubError:
+            return set()
+        return set(version.get("features") or [])
+
     async def device_names(self) -> set[str]:
         """Names of the hub's devices that aren't Home Assistant devices."""
         config = await self._request("GET", "/api/activity-config")

@@ -5,6 +5,7 @@ DOMAIN = "melodious"
 CONF_HA_URL = "ha_url"
 CONF_WEBHOOK_ID = "webhook_id"
 CONF_ENTITIES = "entities"
+CONF_DEVICES = "devices"
 
 DEFAULT_PORT = 8080
 

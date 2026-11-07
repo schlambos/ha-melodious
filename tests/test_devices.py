@@ -167,5 +167,153 @@ class ServiceCallTests(unittest.TestCase):
                 self.assertIsNotNone(devices.service_call(entity, value), f"{entity} {value}")
 
 
+def group(device_id="dev1", name="Living Room TV", members=None, **device_kw):
+    return devices.DeviceGroup(device_id, name, entities=members or [], **device_kw)
+
+
+def mp(entity_id="media_player.living_room_tv", features=None, **attrs):
+    return Entity(entity_id, "TV", True,
+                  features if features is not None else TV_FEATURES,
+                  {"source_list": ["HDMI 1"], **attrs})
+
+
+def assert_hub_accepts_v2(test, device_set):
+    """The v2 limits codexactivity's haSetFrom checks, in Python."""
+    test.assertLessEqual(len(device_set["devices"]), 64)
+    keys, names, entities = set(), set(), set()
+    for d in device_set["devices"]:
+        test.assertRegex(d["key"], r"^[a-z0-9_]+\.[a-z0-9_]+$")
+        test.assertLessEqual(len(d["key"]), 128)
+        test.assertNotIn(d["key"], keys)
+        test.assertNotIn(d["name"].lower(), names)
+        keys.add(d["key"])
+        names.add(d["name"].lower())
+        aliases = set()
+        for item in d["entities"]:
+            test.assertRegex(item["alias"], r"^[a-z0-9_.]+$")
+            test.assertNotIn(":", item["alias"])
+            test.assertRegex(item["entity"], r"^[a-z0-9_]+\.[a-z0-9_]+$")
+            aliases.add(item["alias"])
+            test.assertNotIn(item["entity"], entities, "entity in two devices")
+            entities.add(item["entity"])
+        test.assertTrue(1 <= len(d["entities"]) <= 32)
+        test.assertTrue(0 < len(d["commands"]) <= 128)
+        seen = set()
+        for c in d["commands"]:
+            test.assertNotIn(c["name"].lower(), seen)
+            seen.add(c["name"].lower())
+            alias, sep, action = c["value"].partition(":")
+            test.assertTrue(sep and action, c["value"])
+            test.assertIn(alias, aliases, c["value"])
+            test.assertLessEqual(len(c["value"]), 96)
+        if "power" in d:
+            test.assertIn(d["power"]["on"].lower(), seen)
+            test.assertIn(d["power"]["off"].lower(), seen)
+
+
+class MergedSetTests(unittest.TestCase):
+    def test_merged_device_prefixes_commands_with_aliases(self):
+        g = group(members=[mp(), Entity("remote.living_room_tv", "Remote", True, 0, {})])
+        merged, suppressed = devices.build_merged_set(WEBHOOK, [g], {}, {}, {})
+        spec = merged["devices"][0]
+        self.assertEqual(spec["key"], "media_player.living_room_tv")
+        values = {c["name"]: c["value"] for c in spec["commands"]}
+        self.assertEqual(values["PowerOn"], "media_player.living_room_tv:turn_on")
+        self.assertEqual(values["Mute"], "media_player.living_room_tv:mute")
+        # The remote has no Phase-1 profile yet, but it is still in the table.
+        self.assertEqual(
+            spec["entities"],
+            [{"alias": "media_player.living_room_tv", "entity": "media_player.living_room_tv"},
+             {"alias": "remote.living_room_tv", "entity": "remote.living_room_tv"}],
+        )
+        self.assertEqual(spec["power"], {"on": "PowerOn", "off": "PowerOff"})
+        self.assertEqual(suppressed, [])
+        assert_hub_accepts_v2(self, merged)
+
+    def test_first_command_wins_each_canonical_name(self):
+        g = group(members=[mp("media_player.a"), mp("media_player.z")])
+        spec = devices.build_merged_set(WEBHOOK, [g], {}, {}, {})[0]["devices"][0]
+        values = {c["name"]: c["value"] for c in spec["commands"]}
+        self.assertTrue(values["PowerOn"].startswith("media_player.a:"))
+        self.assertEqual(len([c for c in spec["commands"] if c["name"] == "PowerOn"]), 1)
+
+    def test_disabled_commands_stay_off(self):
+        g = group(members=[mp()])
+        spec = devices.build_merged_set(
+            WEBHOOK, [g], {}, {"dev1": {"VolumeUp", "volumeup"}}, {})[0]["devices"][0]
+        self.assertNotIn("VolumeUp", [c["name"] for c in spec["commands"]])
+
+    def test_long_entity_ids_get_short_aliases(self):
+        long_id = "media_player." + "x" * 90
+        g = group(members=[Entity(long_id, "Long", True, TV_FEATURES, {"source_list": []})])
+        spec = devices.build_merged_set(WEBHOOK, [g], {}, {}, {})[0]["devices"][0]
+        self.assertRegex(spec["entities"][0]["alias"], r"^e[0-9a-f]{8}$")
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
+    def test_previous_set_by_key_survives(self):
+        first, _ = devices.build_merged_set(WEBHOOK, [group(members=[mp()])], {}, {}, {})
+        previous = {first["devices"][0]["key"]: first["devices"][0]}
+        # Player switched off: same set comes back from the merge.
+        off = mp()
+        off.available = False
+        second, _ = devices.build_merged_set(
+            WEBHOOK, [group(members=[off])], {}, {}, previous)
+        self.assertEqual(second, {"webhook": WEBHOOK, "devices": [first["devices"][0]]})
+
+    def test_key_prefers_an_entity_the_hub_already_has(self):
+        old_v1 = devices.build_device_set(WEBHOOK, [mp("media_player.living_room_tv")])
+        previous = {d["entity"]: d for d in old_v1["devices"]}
+        g = group(members=[mp(), Entity("remote.living_room_tv", "Remote", True, 0, {})])
+        merged, _ = devices.build_merged_set(WEBHOOK, [g], {}, {}, previous)
+        self.assertEqual(merged["devices"][0]["key"], "media_player.living_room_tv")
+
+    def test_cast_twin_is_suppressed(self):
+        real = devices.DeviceGroup("d1", "Living Room TV", "SEI", "Box R",
+                                   [mp("media_player.box", TV_FEATURES)])
+        twin = devices.DeviceGroup("d2", "Living Room TV", "Google Inc.", "Chromecast",
+                                   [Entity("media_player.living_room_tv_4", "LR Cast", True,
+                                           TV_FEATURES, {})])
+        for e in twin.entities:
+            e.platform = "cast"
+        for e in real.entities:
+            e.platform = "androidtv_remote"
+        kept, suppressed = devices.suppress_cast_twins([twin, real])
+        self.assertEqual(suppressed, ["Living Room TV"])
+        self.assertEqual(kept, [real])
+
+    def test_cast_without_a_real_device_is_kept(self):
+        twin = devices.DeviceGroup("d2", "Lone Cast", "Google Inc.", "Chromecast",
+                                   [Entity("media_player.lone", "Lone", True, TV_FEATURES, {})])
+        twin.entities[0].platform = "cast"
+        kept, suppressed = devices.suppress_cast_twins([twin])
+        self.assertEqual((kept, suppressed), ([twin], []))
+
+    def test_resolve_v2_command(self):
+        spec = {"entities": [{"alias": "mp", "entity": "media_player.tv"}]}
+        self.assertEqual(devices.resolve_v2_command(spec, "mp:turn_on"),
+                         ("media_player.tv", "turn_on"))
+        self.assertEqual(devices.resolve_v2_command(spec, "mp:select_source:HDMI 1"),
+                         ("media_player.tv", "select_source:HDMI 1"))
+        self.assertIsNone(devices.resolve_v2_command(spec, "nope:turn_on"))
+        self.assertIsNone(devices.resolve_v2_command(spec, "turn_on"))
+
+    def test_webostv_button_service_call(self):
+        self.assertEqual(
+            devices.service_call("media_player.tv", "button:POWER", {}, "webostv"),
+            ("webostv", "button", {"entity_id": "media_player.tv", "button": "POWER"}))
+
+    def test_v1_sets_are_byte_identical(self):
+        entities = [tv(), Entity("light.desk", "Desk", True, 0,
+                                 {"supported_color_modes": ["brightness"]})]
+        self.assertEqual(devices.build_device_set(WEBHOOK, entities),
+                         {"webhook": WEBHOOK, "devices": [
+                             {k: v for k, v in d.items()}
+                             for d in devices.build_device_set(WEBHOOK, entities)["devices"]]})
+        for d in devices.build_device_set(WEBHOOK, entities)["devices"]:
+            self.assertIn("entity", d)
+            self.assertNotIn("key", d)
+            self.assertNotIn(":", [c["value"] for c in d["commands"]][0])
+
+
 if __name__ == "__main__":
     unittest.main()
