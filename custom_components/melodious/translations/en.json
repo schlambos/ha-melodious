@@ -33,7 +33,7 @@
       },
       "review": {
         "title": "Review merged devices",
-        "description": "Per device: which entities to merge, and which commands to leave off the hub.",
+        "description": "Per device: which entities to merge, and which commands to leave off the hub.{warnings}",
         "data": {}
       }
     }

@@ -163,13 +163,13 @@ class MelodiousRuntime:
             if item.get("device_id")
         }
 
-    def _build(self) -> dict:
+    def _build(self, warnings: list[str] | None = None) -> dict:
         previous = self._previous()
         groups = self.groups()
         if groups:
             device_set, _ = build_merged_set(
                 self.webhook_url, groups, self._device_keys(),
-                self._disabled(), previous, self.taken_names,
+                self._disabled(), previous, self.taken_names, warnings,
             )
             return device_set
         return build_device_set(self.webhook_url, self.entities(), previous, self.taken_names)
@@ -177,6 +177,7 @@ class MelodiousRuntime:
     async def async_push(self, force: bool = False) -> None:
         """Send the set to the hub. The hub saves nothing when it hasn't changed."""
         self._cancel_timer()
+        warnings: list[str] = []
         async with self._lock:
             try:
                 self.taken_names = await self.client.device_names()
@@ -200,9 +201,11 @@ class MelodiousRuntime:
                     else:
                         persistent_notification.async_dismiss(
                             self.hass, f"{DOMAIN}_{self.entry.entry_id}_v2")
-                        device_set = self._build()
+                        device_set = self._build(warnings)
                 else:
-                    device_set = self._build()
+                    device_set = self._build(warnings)
+                for warning in warnings:
+                    _LOGGER.warning("Home Assistant device trimmed: %s", warning)
                 if device_set == self.sent and not force:
                     return
                 result = await self.client.commit(device_set)
