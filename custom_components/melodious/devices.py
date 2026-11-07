@@ -107,10 +107,24 @@ class Entity:
     available: bool = True
     supported_features: int = 0
     attributes: dict[str, Any] = field(default_factory=dict)
+    # HA device registry data, when the entity was picked via a device.
+    device_id: str | None = None
+    platform: str | None = None
 
     @property
     def domain(self) -> str:
         return self.entity_id.split(".", 1)[0]
+
+
+@dataclass
+class DeviceGroup:
+    """One HA device (registry entry) and its candidate entities."""
+
+    device_id: str
+    name: str
+    manufacturer: str | None = None
+    model: str | None = None
+    entities: list[Entity] = field(default_factory=list)
 
 
 def clean_label(text: str, limit: int = MAX_NAME) -> str:
@@ -281,17 +295,207 @@ def build_device_set(
 
 
 def allowed_values(device_set: dict) -> dict[str, set[str]]:
-    """Each entity's command values, the only ones a webhook call may run."""
-    return {d["entity"]: {c["value"] for c in d["commands"]} for d in device_set.get("devices", [])}
+    """Each device key's command values, the only ones a webhook call may run.
+
+    The key is the v1 entity ID or the v2 device key; the values are the full
+    command values (bare actions for v1, `<alias>:<action>` for v2).
+    """
+    out = {}
+    for d in device_set.get("devices", []):
+        out[d.get("key") or d.get("entity")] = {c["value"] for c in d["commands"]}
+    return out
+
+
+def _short_alias(entity_id: str) -> str:
+    """A stable short alias when the full entity ID would overflow 96 chars."""
+    import hashlib
+
+    return "e" + hashlib.sha1(entity_id.encode()).hexdigest()[:8]
+
+
+def merge_device(
+    group: DeviceGroup,
+    key: str,
+    previous: dict | None = None,
+    disabled_commands: set[str] | None = None,
+) -> dict | None:
+    """One v2 device spec from a device group's entities.
+
+    Commands come from each available entity's domain profile, prefixed with
+    the entity alias; the first command wins each canonical name
+    (case-insensitive). `previous` is the last sent spec for this key, whose
+    commands/inputs survive by name. Returns None when nothing mappable
+    remains.
+    """
+    disabled = {n.lower() for n in disabled_commands or ()}
+    commands: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    power = None
+    inputs: list[dict] = []
+    entities_table: list[dict] = []
+    for entity in sorted(group.entities, key=lambda e: e.entity_id):
+        if not _ENTITY_RE.match(entity.entity_id):
+            continue
+        alias = entity.entity_id
+        entities_table.append({"alias": alias, "entity": entity.entity_id})
+        if entity.domain not in SUPPORTED_DOMAINS:
+            continue
+        names, entity_power, entity_inputs = _commands_for(entity)
+        if not names:
+            continue
+        probe = f"{alias}:{names[0][1]}"
+        if len(probe) > MAX_VALUE:
+            alias = _short_alias(entity.entity_id)
+            entities_table[-1]["alias"] = alias
+        if not entity.available:
+            continue
+        for name, action in names:
+            if name.lower() in seen or name.lower() in disabled:
+                continue
+            seen.add(name.lower())
+            commands.append((name, f"{alias}:{action}"))
+        if entity_power and power is None:
+            on = next((n for n, _ in commands if n == entity_power.get("on")), None)
+            off = next((n for n, _ in commands if n == entity_power.get("off")), None)
+            toggle = next((n for n, _ in commands if n == entity_power.get("toggle")), None)
+            if toggle:
+                power = {"toggle": toggle}
+            elif on and off:
+                power = {"on": on, "off": off}
+        for item in entity_inputs:
+            if len(inputs) >= MAX_INPUTS:
+                break
+            if item["name"].lower() in {i["name"].lower() for i in inputs}:
+                continue
+            renamed = dict(item, command=next(
+                (n for n, _ in commands if n == item["command"]), item["command"]))
+            inputs.append(renamed)
+    if not commands:
+        return None
+    commands = commands[:MAX_COMMANDS]
+    spec: dict[str, Any] = {
+        "key": key,
+        "name": group.name,
+        "entities": entities_table,
+        "commands": [{"name": n, "value": v} for n, v in commands],
+    }
+    if group.model:
+        spec["model"] = group.model
+    if power:
+        spec["power"] = power
+    if inputs:
+        spec["inputs"] = inputs
+    if previous:
+        spec = _merge(spec, previous)
+        if disabled:
+            # The previous-set merge keeps old commands by name; a disabled
+            # command must not come back through it.
+            spec["commands"] = [c for c in spec["commands"]
+                                if c["name"].lower() not in disabled]
+            kept = {c["name"] for c in spec["commands"]}
+            spec["inputs"] = [i for i in spec.get("inputs", []) if i["command"] in kept]
+    return spec
+
+
+def suppress_cast_twins(groups: list[DeviceGroup]) -> tuple[list[DeviceGroup], list[str]]:
+    """Drop Cast-only devices that duplicate a real webOS/Android TV device.
+
+    A Cast twin shares the TV's name with a device that has a webostv,
+    androidtv_remote or androidtv entity. Returns (kept, suppressed names).
+    """
+    real_names = set()
+    for group in groups:
+        platforms = {e.platform for e in group.entities}
+        if platforms & {"webostv", "androidtv_remote", "androidtv"}:
+            real_names.add(group.name.strip().lower())
+    kept, suppressed = [], []
+    for group in groups:
+        platforms = {e.platform for e in group.entities}
+        domains = {e.domain for e in group.entities}
+        if platforms == {"cast"} and domains == {"media_player"} \
+                and group.name.strip().lower() in real_names:
+            suppressed.append(group.name)
+            continue
+        kept.append(group)
+    return kept, suppressed
+
+
+def build_merged_set(
+    webhook: str,
+    groups: list[DeviceGroup],
+    keys: dict[str, str],
+    disabled: dict[str, set[str]],
+    previous: dict[str, dict],
+    taken_names: set[str] | None = None,
+) -> tuple[dict, list[str]]:
+    """The v2 set for POST /api/ha-devices from device groups.
+
+    `keys` maps HA device_id to the stable hub key; `disabled` maps it to
+    disabled command names; `previous` is the last sent set indexed by key
+    and by entity. Returns (set, suppressed Cast-twin names).
+    """
+    taken = {n.lower() for n in taken_names or ()}
+    used: set[str] = set()
+    groups, suppressed = suppress_cast_twins(groups)
+    devices = []
+    for group in sorted(groups, key=lambda g: g.name.lower())[:MAX_DEVICES]:
+        base = clean_label(group.name) or keys.get(group.device_id, group.device_id)
+        name = base
+        if name.lower() in taken:
+            name = clean_label(f"{base} (HA)")
+        suffix = 2
+        while name.lower() in used or name.lower() in taken:
+            name = clean_label(f"{base[: MAX_NAME - 8]} {suffix}")
+            suffix += 1
+        key = keys.get(group.device_id)
+        if not key:
+            before = None
+            for entity in sorted(group.entities, key=lambda e: e.entity_id):
+                if entity.entity_id in previous:
+                    before = previous[entity.entity_id]
+                    break
+            key = before.get("key", before.get("entity")) if before else group.entities[0].entity_id \
+                if group.entities else group.device_id
+        before = previous.get(key)
+        if before is None:
+            for entity in group.entities:
+                if entity.entity_id in previous:
+                    before = previous[entity.entity_id]
+                    break
+        named = DeviceGroup(group.device_id, name, group.manufacturer, group.model, group.entities)
+        spec = merge_device(named, key, before, disabled.get(group.device_id))
+        if spec:
+            used.add(name.lower())
+            devices.append(spec)
+        elif before:
+            devices.append(dict(before, name=name))
+    return {"webhook": webhook, "devices": devices}, suppressed
+
+
+def resolve_v2_command(
+    device_spec: dict, command_value: str
+) -> tuple[str, str] | None:
+    """(entity_id, action) for a v2 command value, or None when unknown."""
+    alias, sep, action = str(command_value).partition(":")
+    if not sep or not action:
+        return None
+    table = {item["alias"]: item["entity"] for item in device_spec.get("entities", [])}
+    entity_id = table.get(alias)
+    if entity_id is None:
+        return None
+    return entity_id, action
 
 
 def service_call(
-    entity_id: str, value: str, attributes: dict[str, Any] | None = None
+    entity_id: str, value: str, attributes: dict[str, Any] | None = None,
+    platform: str | None = None,
 ) -> tuple[str, str, dict[str, Any]] | None:
     """(domain, service, data) for one webhook call, or None if it isn't one we run."""
     domain = entity_id.split(".", 1)[0]
     action, _, argument = str(value).partition(":")
     target = {"entity_id": entity_id}
+    if platform == "webostv" and action == "button" and argument:
+        return "webostv", "button", {**target, "button": argument}
     if domain == "media_player" and action == "select_source" and argument:
         return domain, "select_source", {**target, "source": argument}
     if domain == "media_player" and action == "mute" and not argument:
