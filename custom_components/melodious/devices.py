@@ -2,9 +2,15 @@
 
 The hub's offline writer (codexactivity CommitHaDevices, POST /api/ha-devices)
 turns each device here into a Harmony device whose commands are IP commands.
-When one runs, the hub posts {"device": <entity_id>, "command": <value>} to
-this integration's webhook, and service_call() turns the value back into a
-service call. A value is "<action>" or "<action>:<argument>".
+When one runs, the hub posts {"device": <key>, "command": <value>} to this
+integration's webhook, and service_call() turns the value back into a service
+call. A v1 value is "<action>" or "<action>:<argument>"; a v2 value is
+"<entity-alias>:<action>[:<argument>]".
+
+Profiles are keyed on (domain, platform), where platform is the entity
+registry's integration name. The v1 path keeps the old domain-only behaviour
+so an existing entity device never changes on upgrade; the v2 merge path uses
+the platform profiles.
 
 The limits below match the hub's writer; it refuses a set that breaks them.
 """
@@ -17,6 +23,8 @@ from typing import Any
 
 SUPPORTED_DOMAINS = (
     "media_player",
+    "remote",
+    "select",
     "light",
     "switch",
     "input_boolean",
@@ -46,6 +54,7 @@ MP_VOLUME_STEP = 1024
 MP_SELECT_SOURCE = 2048
 MP_STOP = 4096
 MP_PLAY = 16384
+REMOTE_ACTIVITY = 4
 FAN_SET_SPEED = 1
 COVER_OPEN = 1
 COVER_CLOSE = 2
@@ -55,6 +64,11 @@ _ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 # The hub fills placeholders with string.gsub and puts values in a JSON body.
 _BAD_VALUE_RE = re.compile(r'[\x00-\x1f\x7f"\\%{}]')
 _BAD_LABEL_RE = re.compile(r'[\x00-\x1f\x7f"\\]')
+
+# Source names that are inputs, not apps. Matched as whole words so an app
+# called "Apple TV" or "LG Travel+" is not mistaken for one.
+_INPUT_WORDS = ("hdmi", "av", "a/v", "component", "composite", "live tv",
+                "antenna", "usb", "scart", "vga", "dvi", "tuner", "aux")
 
 # Which actions a webhook call may run, per domain: action -> (service, data).
 _ACTIONS: dict[str, dict[str, tuple[str, dict[str, Any]]]] = {
@@ -137,15 +151,31 @@ def _value_ok(value: str) -> bool:
     return 0 < len(value) <= MAX_VALUE and not _BAD_VALUE_RE.search(value)
 
 
-def input_command_name(label: str, taken: set[str]) -> str:
-    """A source's command name, from its label ("Input HDMI 1"), so a
-    reordered source list never re-points a button or an activity."""
-    base = ("Input " + " ".join(re.sub(r"[^A-Za-z0-9 _.+-]", "", label).split())).strip()[:44]
+def _prefixed_command_name(prefix: str, label: str, taken: set[str]) -> str:
+    """A command name from a label ("Input HDMI 1", "App Netflix"), kept
+    unique so a reordered list never re-points a button or an activity."""
+    base = (prefix + " " + " ".join(re.sub(r"[^A-Za-z0-9 _.+-]", "", label).split())).strip()[:44]
     name, suffix = base, 2
     while name.lower() in taken:
         name = f"{base} {suffix}"
         suffix += 1
     return name
+
+
+def input_command_name(label: str, taken: set[str]) -> str:
+    """A source's command name, from its label ("Input HDMI 1")."""
+    return _prefixed_command_name("Input", label, taken)
+
+
+def _is_input_source(label: str) -> bool:
+    """True when a webOS source name looks like a physical input, not an app."""
+    text = " ".join(str(label).lower().split())
+    if text.startswith("input "):
+        return True
+    for word in _INPUT_WORDS:
+        if re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text):
+            return True
+    return False
 
 
 def _merge(current: dict, previous: dict | None) -> dict:
@@ -175,8 +205,9 @@ def _merge(current: dict, previous: dict | None) -> dict:
     return merged
 
 
-def _commands_for(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
-    """(commands as (name, value), power, inputs) for one entity."""
+def _legacy_commands_for(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """The v1 domain-only profile. Kept byte-for-byte in behaviour so an
+    existing entity device does not change when the integration upgrades."""
     domain, features = entity.domain, entity.supported_features
     commands: list[tuple[str, str]] = []
     power = None
@@ -234,7 +265,271 @@ def _commands_for(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, l
     names = {name for name, _ in commands}
     if {"PowerOn", "PowerOff"} <= names:
         power = {"on": "PowerOn", "off": "PowerOff"}
-    return commands[:MAX_COMMANDS], power, inputs
+    return commands, power, inputs
+
+
+def _media_player_base(entity: Entity) -> tuple[list[tuple[str, str]], dict | None]:
+    """Power, volume, mute and transport from a media_player's feature bits."""
+    features = entity.supported_features
+    commands: list[tuple[str, str]] = []
+
+    def add(name: str, value: str, when: bool = True) -> None:
+        if when:
+            commands.append((name, value))
+
+    add("PowerOn", "turn_on", features & MP_TURN_ON)
+    add("PowerOff", "turn_off", features & MP_TURN_OFF)
+    step = features & (MP_VOLUME_STEP | MP_VOLUME_SET)
+    add("VolumeUp", "volume_up", step)
+    add("VolumeDown", "volume_down", step)
+    add("Mute", "mute", features & MP_VOLUME_MUTE)
+    add("Play", "media_play", features & MP_PLAY)
+    add("Pause", "media_pause", features & MP_PAUSE)
+    add("PlayPause", "media_play_pause", features & (MP_PLAY | MP_PAUSE))
+    add("Stop", "media_stop", features & MP_STOP)
+    add("SkipForward", "media_next_track", features & MP_NEXT_TRACK)
+    add("SkipBack", "media_previous_track", features & MP_PREVIOUS_TRACK)
+
+    power = None
+    names = {name for name, _ in commands}
+    if {"PowerOn", "PowerOff"} <= names:
+        power = {"on": "PowerOn", "off": "PowerOff"}
+    return commands, power
+
+
+def _sources_as_apps(entity: Entity, commands: list[tuple[str, str]]) -> None:
+    """A TV/player's source list is apps, not inputs (design §3.4)."""
+    if not entity.supported_features & MP_SELECT_SOURCE:
+        return
+    taken = {n.lower() for n, _ in commands}
+    seen: set[str] = set()
+    apps: list[tuple[str, str]] = []
+    for source in entity.attributes.get("source_list") or []:
+        source = str(source)
+        label = clean_label(source)
+        value = f"select_source:{source}"
+        if not label or label != source or not _value_ok(value) or label.lower() in seen:
+            continue
+        seen.add(label.lower())
+        name = _prefixed_command_name("App", label, taken)
+        taken.add(name.lower())
+        apps.append((name, value))
+    commands.extend(apps)
+
+
+def _tv_media_player(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """A player that is a source, not a display: no inputs, apps only."""
+    commands, power = _media_player_base(entity)
+    _sources_as_apps(entity, commands)
+    return commands, power, []
+
+
+def _webostv_media_player(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """LG webOS: media_player services plus webostv.button navigation (§3.2)."""
+    features = entity.supported_features
+    commands: list[tuple[str, str]] = []
+    inputs: list[dict] = []
+
+    def add(name: str, value: str, when: bool = True) -> None:
+        if when:
+            commands.append((name, value))
+
+    has_on = bool(features & MP_TURN_ON)
+    has_off = bool(features & MP_TURN_OFF)
+    add("PowerOn", "turn_on", has_on)
+    add("PowerOff", "turn_off", has_off)
+    # Only one discrete direction (or neither) means the honest power path is
+    # the TV's own POWER button, not a turn_on the integration cannot promise.
+    add("PowerToggle", "button:POWER", not (has_on and has_off))
+    power = None
+    if has_on and has_off:
+        power = {"on": "PowerOn", "off": "PowerOff"}
+    elif "PowerToggle" in {n for n, _ in commands}:
+        power = {"toggle": "PowerToggle"}
+
+    if features & MP_VOLUME_STEP:
+        add("VolumeUp", "volume_up")
+        add("VolumeDown", "volume_down")
+    elif features & MP_VOLUME_SET:
+        # No step service: the TV's own volume buttons are still step-based.
+        add("VolumeUp", "button:VOLUMEUP")
+        add("VolumeDown", "button:VOLUMEDOWN")
+    add("Mute", "mute", features & MP_VOLUME_MUTE)
+    add("Play", "media_play", features & MP_PLAY)
+    add("Pause", "media_pause", features & MP_PAUSE)
+    add("PlayPause", "media_play_pause", features & (MP_PLAY | MP_PAUSE))
+    add("Stop", "media_stop", features & MP_STOP)
+    # Back before any Previous* command: the Touch binds PrevChannel by alias.
+    add("Back", "button:BACK")
+    add("SkipForward", "media_next_track", features & MP_NEXT_TRACK)
+    add("SkipBack", "media_previous_track", features & MP_PREVIOUS_TRACK)
+
+    add("DirectionUp", "button:UP")
+    add("DirectionDown", "button:DOWN")
+    add("DirectionLeft", "button:LEFT")
+    add("DirectionRight", "button:RIGHT")
+    add("Select", "button:ENTER")
+    # Menu before Home: the Touch's Menu key accepts the "home" alias.
+    add("Menu", "button:MENU")
+    add("Home", "button:HOME")
+    add("Guide", "button:GUIDE")
+    add("Info", "button:INFO")
+    add("Exit", "button:EXIT")
+    for digit in "0123456789":
+        add(digit, f"button:{digit}")
+    add("Dash", "button:DASH")
+    add("Record", "button:RECORD")
+    add("Red", "button:RED")
+    add("Green", "button:GREEN")
+    add("Yellow", "button:YELLOW")
+    add("Blue", "button:BLUE")
+    add("ChannelUp", "button:CHANNELUP")
+    add("ChannelDown", "button:CHANNELDOWN")
+
+    if features & MP_SELECT_SOURCE:
+        taken = {n.lower() for n, _ in commands}
+        seen: set[str] = set()
+        apps: list[tuple[str, str]] = []
+        for source in entity.attributes.get("source_list") or []:
+            source = str(source)
+            label = clean_label(source)
+            value = f"select_source:{source}"
+            if not label or label != source or not _value_ok(value) or label.lower() in seen:
+                continue
+            seen.add(label.lower())
+            if _is_input_source(label):
+                if len(inputs) >= MAX_INPUTS:
+                    continue
+                name = input_command_name(label, taken)
+                taken.add(name.lower())
+                add(name, value)
+                inputs.append({"name": label, "command": name})
+            else:
+                name = _prefixed_command_name("App", label, taken)
+                taken.add(name.lower())
+                apps.append((name, value))
+        # Apps last: the 128-command trim drops them before real controls.
+        commands.extend(apps)
+
+    return commands, power, inputs
+
+
+def _androidtv_remote_remote(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """Google TV navigation via the androidtv_remote remote entity (§3.3)."""
+    commands: list[tuple[str, str]] = []
+
+    def add(name: str, key: str) -> None:
+        commands.append((name, f"send_command:{key}"))
+
+    add("DirectionUp", "DPAD_UP")
+    add("DirectionDown", "DPAD_DOWN")
+    add("DirectionLeft", "DPAD_LEFT")
+    add("DirectionRight", "DPAD_RIGHT")
+    add("Select", "DPAD_CENTER")
+    add("Back", "BACK")
+    # Menu before Home, as above.
+    add("Menu", "MENU")
+    add("Home", "HOME")
+    for digit in "0123456789":
+        add(digit, digit)
+    add("Dash", "MINUS")
+    add("Red", "PROG_RED")
+    add("Green", "PROG_GREEN")
+    add("Yellow", "PROG_YELLOW")
+    add("Blue", "PROG_BLUE")
+    # No RECORD key in androidtvremote2 0.2.3 (HA 2026.1.2); MEDIA_RECORD is
+    # a different key, so Record is deliberately not emitted.
+
+    taken = {n.lower() for n, _ in commands}
+    apps: list[tuple[str, str]] = []
+    for app in entity.attributes.get("activity_list") or []:
+        app = str(app)
+        label = clean_label(app)
+        value = f"turn_on:{app}"
+        if not label or label != app or not _value_ok(value):
+            continue
+        name = _prefixed_command_name("App", label, taken)
+        taken.add(name.lower())
+        apps.append((name, value))
+    commands.extend(apps)
+    return commands, None, []
+
+
+def _androidtv_adb_remote(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """Older Android TV / Fire TV (ADB) navigation (§3.3).
+
+    Key names are androidtv 0.0.75's constants.KEYS (HA 2026.1.2). That table
+    has no digits, Dash, Record, Guide, Info, Exit or channel keys, so those
+    are deliberately not emitted. Code-and-unit-test only: the owner has no
+    ADB device.
+    """
+    commands: list[tuple[str, str]] = []
+
+    def add(name: str, key: str) -> None:
+        commands.append((name, f"send_command:{key}"))
+
+    add("DirectionUp", "UP")
+    add("DirectionDown", "DOWN")
+    add("DirectionLeft", "LEFT")
+    add("DirectionRight", "RIGHT")
+    add("Select", "ENTER")
+    add("Back", "BACK")
+    add("Menu", "MENU")
+    add("Home", "HOME")
+    add("Red", "RED")
+    add("Green", "GREEN")
+    add("Yellow", "YELLOW")
+    add("Blue", "BLUE")
+    return commands, None, []
+
+
+def _select_commands(entity: Entity) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """An AVR source selector: each option becomes an Input command (§3.5)."""
+    commands: list[tuple[str, str]] = []
+    inputs: list[dict] = []
+    taken: set[str] = set()
+    seen: set[str] = set()
+    for option in entity.attributes.get("options") or []:
+        option = str(option)
+        label = clean_label(option)
+        value = f"select_option:{option}"
+        if not label or label != option or not _value_ok(value) or label.lower() in seen:
+            continue
+        if len(inputs) >= MAX_INPUTS:
+            break
+        seen.add(label.lower())
+        name = input_command_name(label, taken)
+        taken.add(name.lower())
+        commands.append((name, value))
+        inputs.append({"name": label, "command": name})
+    return commands, None, inputs
+
+
+def _commands_for(
+    entity: Entity, merged: bool = False
+) -> tuple[list[tuple[str, str]], dict | None, list[dict]]:
+    """(commands as (name, value), power, inputs) for one entity.
+
+    `merged` selects the v2 platform profiles. The v1 path stays domain-only
+    for media players so an existing entity device is unchanged.
+    """
+    domain, platform = entity.domain, entity.platform
+    if domain == "media_player":
+        if merged and platform == "webostv":
+            return _webostv_media_player(entity)
+        if merged and platform in ("androidtv_remote", "androidtv", "cast"):
+            return _tv_media_player(entity)
+        return _legacy_commands_for(entity)
+    if domain == "remote":
+        if platform == "androidtv_remote":
+            return _androidtv_remote_remote(entity)
+        if platform == "androidtv":
+            return _androidtv_adb_remote(entity)
+        # An unknown remote's key names are not known; do not guess.
+        return [], None, []
+    if domain == "select":
+        return _select_commands(entity)
+    return _legacy_commands_for(entity)
 
 
 def device_spec(entity: Entity, name: str) -> dict | None:
@@ -244,6 +539,7 @@ def device_spec(entity: Entity, name: str) -> dict | None:
     commands, power, inputs = _commands_for(entity)
     if not commands:
         return None
+    commands = commands[:MAX_COMMANDS]
     spec: dict[str, Any] = {
         "entity": entity.entity_id,
         "name": name,
@@ -313,19 +609,57 @@ def _short_alias(entity_id: str) -> str:
     return "e" + hashlib.sha1(entity_id.encode()).hexdigest()[:8]
 
 
+def _v2_previous(previous: dict, entities_table: list[dict]) -> dict | None:
+    """A previous spec with v2 aliases, so a v1 device migrates cleanly.
+
+    A v1 previous spec has bare action values; prefixing them with the
+    entity's current alias keeps its commands (including old `Input ...`
+    names an activity still uses) valid in a v2 device. A v2 previous spec
+    only needs its values rewritten if the entity's alias changed.
+    """
+    alias_by_entity = {item["entity"]: item["alias"] for item in entities_table}
+    if previous.get("key") or previous.get("entities"):
+        changes = {}
+        for item in previous.get("entities", []):
+            new = alias_by_entity.get(item["entity"])
+            if new and new != item["alias"]:
+                changes[item["alias"]] = new
+        if not changes:
+            return previous
+        out = dict(previous)
+        out["commands"] = []
+        for command in previous.get("commands", []):
+            alias, sep, rest = str(command.get("value", "")).partition(":")
+            if sep and alias in changes:
+                command = dict(command, value=f"{changes[alias]}:{rest}")
+            out["commands"].append(command)
+        return out
+    entity = previous.get("entity")
+    alias = alias_by_entity.get(entity) if entity else None
+    if not alias:
+        return None
+    out = dict(previous)
+    out["commands"] = [
+        dict(command, value=f"{alias}:{command['value']}")
+        for command in previous.get("commands", [])
+    ]
+    return out
+
+
 def merge_device(
     group: DeviceGroup,
     key: str,
     previous: dict | None = None,
     disabled_commands: set[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> dict | None:
     """One v2 device spec from a device group's entities.
 
-    Commands come from each available entity's domain profile, prefixed with
-    the entity alias; the first command wins each canonical name
-    (case-insensitive). `previous` is the last sent spec for this key, whose
-    commands/inputs survive by name. Returns None when nothing mappable
-    remains.
+    Commands come from each available entity's (domain, platform) profile,
+    prefixed with the entity alias; the first command wins each canonical
+    name (case-insensitive). `previous` is the last sent spec for this key,
+    whose commands/inputs survive by name. Returns None when nothing mappable
+    remains. When `warnings` is given, a 128-command trim is reported there.
     """
     disabled = {n.lower() for n in disabled_commands or ()}
     commands: list[tuple[str, str]] = []
@@ -340,11 +674,13 @@ def merge_device(
         entities_table.append({"alias": alias, "entity": entity.entity_id})
         if entity.domain not in SUPPORTED_DOMAINS:
             continue
-        names, entity_power, entity_inputs = _commands_for(entity)
+        names, entity_power, entity_inputs = _commands_for(entity, merged=True)
         if not names:
             continue
-        probe = f"{alias}:{names[0][1]}"
-        if len(probe) > MAX_VALUE:
+        # The alias must fit the hub's 64-char alias limit and every
+        # "<alias>:<action>" value the entity contributes must fit 96 chars.
+        if len(alias) > 64 or any(len(f"{alias}:{action}") > MAX_VALUE
+                                  for _, action in names):
             alias = _short_alias(entity.entity_id)
             entities_table[-1]["alias"] = alias
         if not entity.available:
@@ -367,12 +703,23 @@ def merge_device(
                 break
             if item["name"].lower() in {i["name"].lower() for i in inputs}:
                 continue
-            renamed = dict(item, command=next(
-                (n for n, _ in commands if n == item["command"]), item["command"]))
-            inputs.append(renamed)
+            command = next((n for n, _ in commands if n == item["command"]), None)
+            if command is None:
+                continue
+            inputs.append(dict(item, command=command))
     if not commands:
         return None
-    commands = commands[:MAX_COMMANDS]
+    if len(commands) > MAX_COMMANDS:
+        dropped = commands[MAX_COMMANDS:]
+        dropped_apps = sum(1 for name, _ in dropped if name.startswith("App "))
+        if warnings is not None:
+            warnings.append(
+                f"{group.name}: {len(commands)} commands; kept {MAX_COMMANDS}, "
+                f"dropped {len(dropped)} ({dropped_apps} app commands)"
+            )
+        commands = commands[:MAX_COMMANDS]
+    kept = {n for n, _ in commands}
+    inputs = [i for i in inputs if i["command"] in kept]
     spec: dict[str, Any] = {
         "key": key,
         "name": group.name,
@@ -385,35 +732,77 @@ def merge_device(
         spec["power"] = power
     if inputs:
         spec["inputs"] = inputs
+    previous = _v2_previous(previous, entities_table) if previous else None
     if previous:
         spec = _merge(spec, previous)
-        if disabled:
-            # The previous-set merge keeps old commands by name; a disabled
-            # command must not come back through it.
-            spec["commands"] = [c for c in spec["commands"]
-                                if c["name"].lower() not in disabled]
-            kept = {c["name"] for c in spec["commands"]}
-            spec["inputs"] = [i for i in spec.get("inputs", []) if i["command"] in kept]
+    if disabled:
+        # The previous-set merge keeps old commands by name; a disabled
+        # command must not come back through it.
+        spec["commands"] = [c for c in spec["commands"]
+                            if c["name"].lower() not in disabled]
+        kept = {c["name"] for c in spec["commands"]}
+        inputs = [i for i in spec.get("inputs", []) if i["command"] in kept]
+        if inputs:
+            spec["inputs"] = inputs
+        else:
+            spec.pop("inputs", None)
+    if spec.get("power"):
+        # Recompute the power pair from the surviving commands, so unticking
+        # a power command cannot leave the hub a pair that names a missing one.
+        names = {c["name"] for c in spec["commands"]}
+        power = spec["power"]
+        if "toggle" in power:
+            if power["toggle"] not in names:
+                spec.pop("power")
+        elif power.get("on") not in names or power.get("off") not in names:
+            spec.pop("power")
     return spec
+
+
+def _device_name_key(name: str) -> str:
+    """A comparable device name: case, punctuation and [brand] tags removed."""
+    text = re.sub(r"\[[^\]]*\]", " ", str(name or "").lower())
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _same_device_name(first: str, second: str) -> bool:
+    """True when two registry names clearly describe the same physical device.
+
+    Exact matches cover the Google TV twins. The LG Cast twin is named
+    "[LG] webOS TV OLED65C4PUA" while the real device is "LG webOS TV
+    OLED65C4PUA", so a multi-word suffix match covers that without joining
+    two differently named TVs in different rooms.
+    """
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    first_words, second_words = first.split(), second.split()
+    if min(len(first_words), len(second_words)) < 2:
+        return False
+    return first.endswith(" " + second) or second.endswith(" " + first)
 
 
 def suppress_cast_twins(groups: list[DeviceGroup]) -> tuple[list[DeviceGroup], list[str]]:
     """Drop Cast-only devices that duplicate a real webOS/Android TV device.
 
-    A Cast twin shares the TV's name with a device that has a webostv,
-    androidtv_remote or androidtv entity. Returns (kept, suppressed names).
+    A Cast twin is a separate HA device entry for the same hardware. It is
+    suppressed when a device with a webostv, androidtv_remote or androidtv
+    entity has the same (normalised) name. Returns (kept, suppressed names).
     """
-    real_names = set()
+    real_names = []
     for group in groups:
         platforms = {e.platform for e in group.entities}
         if platforms & {"webostv", "androidtv_remote", "androidtv"}:
-            real_names.add(group.name.strip().lower())
+            real_names.append(_device_name_key(group.name))
     kept, suppressed = [], []
     for group in groups:
         platforms = {e.platform for e in group.entities}
         domains = {e.domain for e in group.entities}
+        name = _device_name_key(group.name)
         if platforms == {"cast"} and domains == {"media_player"} \
-                and group.name.strip().lower() in real_names:
+                and any(_same_device_name(name, real) for real in real_names):
             suppressed.append(group.name)
             continue
         kept.append(group)
@@ -427,12 +816,14 @@ def build_merged_set(
     disabled: dict[str, set[str]],
     previous: dict[str, dict],
     taken_names: set[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[dict, list[str]]:
     """The v2 set for POST /api/ha-devices from device groups.
 
     `keys` maps HA device_id to the stable hub key; `disabled` maps it to
     disabled command names; `previous` is the last sent set indexed by key
-    and by entity. Returns (set, suppressed Cast-twin names).
+    and by entity. Returns (set, suppressed Cast-twin names). When `warnings`
+    is given, per-device trim reasons are appended to it.
     """
     taken = {n.lower() for n in taken_names or ()}
     used: set[str] = set()
@@ -463,7 +854,7 @@ def build_merged_set(
                     before = previous[entity.entity_id]
                     break
         named = DeviceGroup(group.device_id, name, group.manufacturer, group.model, group.entities)
-        spec = merge_device(named, key, before, disabled.get(group.device_id))
+        spec = merge_device(named, key, before, disabled.get(group.device_id), warnings)
         if spec:
             used.add(name.lower())
             devices.append(spec)
@@ -501,6 +892,12 @@ def service_call(
     if domain == "media_player" and action == "mute" and not argument:
         muted = bool((attributes or {}).get("is_volume_muted"))
         return domain, "volume_mute", {**target, "is_volume_muted": not muted}
+    if domain == "remote" and action == "send_command" and argument:
+        return domain, "send_command", {**target, "command": [argument]}
+    if domain == "remote" and action == "turn_on" and argument:
+        return domain, "turn_on", {**target, "activity": argument}
+    if domain == "select" and action == "select_option" and argument:
+        return domain, "select_option", {**target, "option": argument}
     known = _ACTIONS.get(domain, {}).get(action)
     if not known or argument:
         return None

@@ -170,6 +170,7 @@ class MelodiousOptionsFlow(OptionsFlow):
             })
 
         schema_dict: dict[Any, Any] = {}
+        warnings: list[str] = []
         for device_id in picked:
             group = _group(device_id)
             prev = saved.get(device_id, {})
@@ -179,7 +180,8 @@ class MelodiousOptionsFlow(OptionsFlow):
                 default=prev.get("entities") or reg_ids,
             )] = selector.SelectSelector(selector.SelectSelectorConfig(
                 options=reg_ids, multiple=True))
-            preview = merge_device(group, key=reg_ids[0] if reg_ids else device_id)
+            preview = merge_device(group, key=reg_ids[0] if reg_ids else device_id,
+                                   warnings=warnings)
             command_names = [c["name"] for c in (preview["commands"] if preview else [])]
             schema_dict[vol.Optional(
                 f"disabled_{device_id}",
@@ -187,4 +189,8 @@ class MelodiousOptionsFlow(OptionsFlow):
                          if c in command_names],
             )] = selector.SelectSelector(selector.SelectSelectorConfig(
                 options=command_names, multiple=True))
-        return self.async_show_form(step_id="review", data_schema=vol.Schema(schema_dict))
+        warning_text = "\n".join(warnings)
+        return self.async_show_form(
+            step_id="review", data_schema=vol.Schema(schema_dict),
+            description_placeholders={"warnings": f"\n\n{warning_text}" if warning_text else ""},
+        )
