@@ -510,6 +510,12 @@ class LGWebOSTests(unittest.TestCase):
         self.assertNotIn("PowerToggle", values)
         self.assertEqual(spec["power"], {"on": "PowerOn", "off": "PowerOff"})
 
+    def test_disabling_power_toggle_drops_the_power_pair(self):
+        spec, _ = merged_spec([lg_tv()], name="LG webOS TV OLED65C4PUA",
+                              device_id="lg", disabled={"PowerToggle"})
+        self.assertNotIn("power", spec)
+        self.assertNotIn("PowerToggle", [c["name"] for c in spec["commands"]])
+
     def test_volume_set_without_step_uses_the_tv_buttons(self):
         entity = lg_tv()
         entity.supported_features = (LG_FEATURES & ~devices.MP_VOLUME_STEP) | devices.MP_VOLUME_SET
@@ -618,6 +624,12 @@ class GoogleTVTests(unittest.TestCase):
         self.assertLess(names.index("Menu"), names.index("Home"))
         self.assertIn("Select", names)
         self.assertNotIn("Enter", names)
+
+    def test_disabling_power_off_drops_the_power_pair(self):
+        spec, _ = merged_spec(google_tv(), name="Living Room TV", device_id="gt",
+                              disabled={"PowerOff"})
+        self.assertNotIn("power", spec)
+        self.assertNotIn("PowerOff", [c["name"] for c in spec["commands"]])
 
 
 class AndroidTVADBTests(unittest.TestCase):

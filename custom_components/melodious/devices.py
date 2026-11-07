@@ -746,6 +746,16 @@ def merge_device(
             spec["inputs"] = inputs
         else:
             spec.pop("inputs", None)
+    if spec.get("power"):
+        # Recompute the power pair from the surviving commands, so unticking
+        # a power command cannot leave the hub a pair that names a missing one.
+        names = {c["name"] for c in spec["commands"]}
+        power = spec["power"]
+        if "toggle" in power:
+            if power["toggle"] not in names:
+                spec.pop("power")
+        elif power.get("on") not in names or power.get("off") not in names:
+            spec.pop("power")
     return spec
 
 
