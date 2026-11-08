@@ -151,7 +151,7 @@ actions:
 When the hub reports `ha-state` in `GET /api/version`, Melodious also pushes a live state snapshot (`POST /api/ha-state`) for every exposed Home Assistant device:
 
 - **What it carries:** `power` (`on`, `off`, `unknown`), `source` (input name), `volume` (`0..1`), `muted`, `playing` (`playing`, `paused`, `idle`, `off`, `unknown`), `activity` (current app), monotonic `seq`, `updated` and per-entity state strings. Missing or `unavailable` entities become `null`/`unknown`, never `off`.
-- **Cadence:** state changes coalesce with a 2 s debounce into one batched push for all devices, plus a 30 s heartbeat, and never push more than once every 2 s.
+- **Cadence:** a state change is pushed straight away in one batch for all devices; changes that follow within 1.2 s are coalesced into the next push (the hub takes one per second). A 30 s heartbeat keeps the state fresh.
 - **Volatile on the hub:** the hub keeps the snapshot in `/var/volatile/codex-ha-state.json` (RAM only, never flash) and marks it stale after 90 s without a push. Unloading or stopping Home Assistant sends no fake `off` snapshot; the Melodious web and Android apps show **State unknown** once the snapshot turns stale.
 - **Older hubs** without `ha-state` in `/api/version` are skipped silently.
 

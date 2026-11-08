@@ -285,7 +285,7 @@ class MelodiousRuntime:
 
     @callback
     def schedule_state_push(self, immediate: bool = False) -> None:
-        """Coalesce state changes (2 s debounce, never more than once per 2 s)."""
+        """Push now if the last push was long enough ago, else once the interval is up."""
         if self._state_timer is not None or self.sent is None:
             return
         now = time.monotonic()
@@ -340,8 +340,8 @@ class MelodiousRuntime:
 
     @callback
     def async_state_changed(self, _event: Event[EventStateChangedData]) -> None:
-        """Push the device set only when it would change; always schedule a state push."""
-        self.schedule_state_push(immediate=False)
+        """Push the device set only when it would change; push state straight away."""
+        self.schedule_state_push(immediate=True)
         if self._timer is None and self.sent is not None and self._build() != self.sent:
             self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
 
