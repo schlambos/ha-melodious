@@ -4,7 +4,7 @@ Home Assistant entities as devices on a [Melodious](https://github.com/schlambos
 
 When one of its commands runs, the hub posts `{"device": <key>, "command": <value>}` to this integration's webhook, which calls the matching service. No Home Assistant token lives on the hub; the webhook ID is the only secret.
 
-Home Assistant can already control the hub through the built-in **Logitech Harmony Hub** integration. This one adds the other direction.
+It also works the other way round: the hub appears in Home Assistant as a `remote` entity, so automations can start activities and send any hub command, like the built-in **Logitech Harmony Hub** integration's remote.
 
 ## Requirements
 
@@ -105,7 +105,32 @@ If you previously added the Cast twin as its own entity device, remove it from a
 - **Limits:** 128 commands and 32 inputs per device. Apps are last, so a 128-command trim drops apps first and reports the reason in the review step and the log. True inputs are preferred over apps.
 - **Long values:** a value must fit 96 characters. A long entity ID or a long app name makes the builder use a stable short alias (`e<8hex>`) for that entity.
 - **On a Harmony Touch, each device gets its own screen**: Devices, then the device. The hub builds it from the device's commands. A command named like a hard key goes on that key (VolumeUp, Mute, Play, Menu, Back, Select…), and every other command is an on-screen button. The screen follows the device when its commands change. This needs a Melodious hub with Touch device screens (`POST /api/device-screen`); an older hub adds the device without a screen.
-- **Removing an entity** takes its device and its Touch screen off the hub, unless an activity or button still uses it.
+- **Unticking an entity or device** in Configure takes its device and its Touch screen off the hub, unless an activity or button still uses it.
+- **Removing the integration** leaves the hub's devices where they are, so re-adding it picks up where it left off. Untick everything in Configure first if you want them gone.
+
+## The hub as a remote
+
+Each hub gets one `remote` entity (for example `remote.melodious_hub_192_168_0_123`), on a device named after the hub:
+
+- **State:** on while an activity runs, off on PowerOff. `current_activity` and `activity_list` are the hub's activities; `devices` lists the hub's device names; `last_activity` is the one `remote.turn_on` resumes. It refreshes every 30 s and after every action, and shows unavailable (never off) when the hub can't be reached.
+- **`remote.turn_on`** starts `activity` (name or ID), or the last activity, or the first one. An activity that's already running isn't restarted. **`remote.turn_off`** runs PowerOff.
+- **`remote.send_command`** needs `device` (the hub's device name or ID) and sends each `command` by the hub's command name: IR, Bluetooth and Home Assistant devices alike. `num_repeats`, `delay_secs` (default 0.4) and `hold_secs` work as in the built-in integration. A hold is a real press-and-hold on the hub; on a Home Assistant device it repeats the command, so a toggle can fire more than once.
+- **Names** match exactly, then by ID, then case-insensitively. An unknown device or command is logged with the names the hub has, and nothing is sent. A command name is the hub's (`DirectionUp`, `Input HDMI 1`), not a key code (`DPAD_UP`).
+- **Not supported:** `learn_command` and `delete_command`. Learn IR in the Melodious app.
+
+```yaml
+actions:
+  - action: remote.turn_on
+    target: {entity_id: remote.melodious_hub_192_168_0_123}
+    data: {activity: TV}
+  - action: remote.send_command
+    target: {entity_id: remote.melodious_hub_192_168_0_123}
+    data:
+      device: LG webOS TV OLED65C4PUA
+      command: Input HDMI 4
+```
+
+Every command the hub sends to a Home Assistant device also fires a `melodious.command_received` event (`hub`, `device`, `device_key`, `entity_id`, `command`, `action`, `value`), so a Harmony button can trigger any automation.
 
 ## Tests
 
