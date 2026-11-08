@@ -32,12 +32,15 @@ class HubClient:
         self._base = f"http://{host}:{port}"
         self._auth = aiohttp.BasicAuth(username, password or "") if username else None
 
-    async def _request(self, method: str, path: str, payload: Any = None, timeout: int = 20) -> Any:
+    async def _request(
+        self, method: str, path: str, payload: Any = None, timeout: int = 20, form: dict | None = None
+    ) -> Any:
         try:
             async with self._session.request(
                 method,
                 self._base + path,
-                json=payload,
+                json=payload if form is None else None,
+                data=form,
                 auth=self._auth,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
@@ -81,6 +84,25 @@ class HubClient:
         """The hub's current HA device specs, for seeding _previous on first run."""
         config = await self._request("GET", "/api/activity-config")
         return hub_ha_devices(config)
+
+    async def activity_config(self) -> dict:
+        return await self._request("GET", "/api/activity-config", timeout=30)
+
+    async def activity_state(self) -> dict:
+        return await self._request("GET", "/api/activity-state")
+
+    async def run_activity(self, activity_id: str) -> dict:
+        """Start an activity; "-1" is PowerOff. Form-encoded, like the hub's web app."""
+        return await self._request("POST", "/api/activity-run", form={"activityId": activity_id}, timeout=60)
+
+    async def send_command(
+        self, device_id: str, command: str, status: str | None = None, hold_id: str | None = None
+    ) -> dict:
+        """POST /api/ir-send. It answers 200 even when the engine refuses; read `reply`."""
+        form = {"deviceId": device_id, "command": command}
+        if status:
+            form.update(status=status, holdId=hold_id or "")
+        return await self._request("POST", "/api/ir-send", form=form, timeout=30)
 
     async def commit(self, device_set: dict, dry_run: bool = False) -> dict:
         """Replace the hub's Home Assistant devices. The writer can take up to 45 s."""

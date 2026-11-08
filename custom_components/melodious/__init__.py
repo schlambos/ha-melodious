@@ -17,7 +17,7 @@ from aiohttp import web
 
 from homeassistant.components import persistent_notification, webhook
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, STATE_UNAVAILABLE
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, STATE_UNAVAILABLE, Platform
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
@@ -37,6 +37,8 @@ from .devices import (
 from .hub import HubClient, HubError, HubRefused
 
 _LOGGER = logging.getLogger(__name__)
+
+PLATFORMS = [Platform.REMOTE]
 
 type MelodiousConfigEntry = ConfigEntry[MelodiousRuntime]
 
@@ -343,6 +345,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
         await runtime.async_push(force=True)
 
     entry.async_on_unload(async_at_started(hass, push_when_started))
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
@@ -351,13 +354,14 @@ async def _async_options_updated(hass: HomeAssistant, entry: MelodiousConfigEntr
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) -> bool:
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Take this integration's devices off the hub. The hub keeps any an activity still uses."""
-    try:
-        await hub_client(hass, entry.data).commit({"devices": []})
-    except HubError as err:
-        _LOGGER.warning("The hub kept its Home Assistant devices: %s", err)
+    """Forget this entry, but leave the hub's devices alone.
+
+    Removing the integration is often the first step of re-adding it; wiping
+    the hub here would strand every activity and button that uses a device.
+    Unticking a device in Configure is how one comes off the hub.
+    """
     await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}").async_remove()
