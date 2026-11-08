@@ -37,8 +37,8 @@ An LG webOS TV (`webostv`) gets:
 | `Mute` | `volume_mute` toggle |
 | `Play`, `Pause`, `PlayPause`, `Stop` | the matching media_player services |
 | `SkipForward` / `SkipBack` | next/previous track (channel up/down while Live TV is showing) |
-| `Input HDMI 1`, `Input HDMI 4`, `Input Live TV` | `select_source`; only real inputs become inputs |
-| `App <name>` | `select_source` for every other source (Netflix, YouTube, …) |
+| `Input HDMI 1` … `Input HDMI 4` | `webostv.command` → `tv/switchInput` by stable port ID, not the changing CEC label |
+| `App <name>` | `select_source` for apps (Netflix, YouTube, Live TV, …), excluding HDMI/CEC names |
 | `DirectionUp` / `Down` / `Left` / `Right` | `webostv.button` `UP` / `DOWN` / `LEFT` / `RIGHT` |
 | `Select` | `ENTER` |
 | `Back` | `BACK` |
@@ -53,6 +53,7 @@ An LG webOS TV (`webostv`) gets:
 - **Powering on from off:** Home Assistant 2026.1.2's webOS integration refuses `webostv.button` while the entity state is `off`. If `PowerToggle` cannot turn the TV on from off on your setup, enable Wake-on-LAN in the webOS integration's Configure step so the `TURN_ON` bit appears; the profile then uses discrete `PowerOn`/`PowerOff`.
 - **Volume:** if the TV's sound output is an external soundbar/ARC, its volume commands are still on the device; if the soundbar/AVR is the activity's volume role, untick the TV's volume commands in the review step.
 - **No absolute volume.** Harmony commands are step-based; the profile never invents a `Volume 35` command.
+- **Stable HDMI ports:** the merged profile reads `tv/getExternalInputList` through HA's existing webOS connection. `HDMI_1` always controls HDMI 1, even when CEC renames it. Input keys and command names stay `HDMI 1` / `Input HDMI 1` so activities and existing command IDs survive. CEC names are display labels in theater state. Old misclassified `App …` port commands are retained and repointed to their port when identified, to preserve buttons. When the TV is off, the last device spec keeps its ports; no new ports or labels are guessed from `source_list`. First discovery needs the TV already on; this integration never turns it on to read it.
 
 ### Google TV / Android TV
 
@@ -154,6 +155,16 @@ When the hub reports `ha-state` in `GET /api/version`, Melodious also pushes a l
 - **Cadence:** a state change is pushed straight away in one batch for all devices; changes that follow within 1.2 s are coalesced into the next push (the hub takes one per second). A 30 s heartbeat keeps the state fresh.
 - **Volatile on the hub:** the hub keeps the snapshot in `/var/volatile/codex-ha-state.json` (RAM only, never flash) and marks it stale after 90 s without a push. Unloading or stopping Home Assistant sends no fake `off` snapshot; the Melodious web and Android apps show **State unknown** once the snapshot turns stale.
 - **Older hubs** without `ha-state` in `/api/version` are skipped silently.
+
+### LG theater state and links
+
+While a selected LG is on, three read-only webOS queries run every 5 s: external inputs, volume status and foreground app. Input commands and HA state/source changes also request an immediate refresh. Queries time out after 4 s, do not overlap, and stop while the TV is off/unavailable. A failed field becomes unknown rather than retaining its last successful value; observations expire after 8 s. Raw responses are never logged or stored: the parser allowlists port/CEC labels, types, vendors, connection/signal flags and sound data only. It discards icons/URLs, unique IDs and physical addresses; no serial/MAC services are called.
+
+The LG snapshot adds `theater`: `active_input` (`id`, `label`), `ports` (`id`, `label`, `connected`, `signal`, `cec_name`, numeric `cec_type`, numeric `cec_vendor`), `sound` (`output`, destination `label`/`port`, TV-reported `volume`/`muted`, `external_control`), and `foreground_app`. The off/unavailable/expired value is `null`. `connected` and video signal are **not power state**. The ARC destination is labeled only when exactly one connected CEC audio system identifies it. Volume is TV-reported: independent tracking of changes made with the soundbar's own remote still needs hardware verification.
+
+**Approved linking model (owner decision, Phase 6):** explicit, display-only `(LG entity, HDMI port) → existing hub device ID` links, stored in integration options, not on hub flash. In **Configure**, check **Edit LG HDMI device links**; after reviewing devices, select one or more existing hub devices for each port. Multiple targets let an IR device and its HA counterpart show the same observation. Links never merge devices, replace commands, change activity roles, or override an HA device's measured state. Removing all selections clears a link; normal device reconfiguration preserves links. The snapshot carries `theater_links` (`port`, `device_id`) even while theater state is unknown, so the web app can show the linked source as unknown. Missing/deleted target IDs never control anything.
+
+The owner confirmed bidirectional SIMPLINK auto-power sync; that could support a **derived**, explicitly labeled power proxy in future. This minimal implementation deliberately leaves linked-device power unknown and reports only ARC/volume/connection/signal observations. No arbitrary CEC commands or independent soundbar power measurement are promised. Older web apps ignore the extra fields; theater display needs the Phase 6 hub web-app update.
 
 ## Tests
 

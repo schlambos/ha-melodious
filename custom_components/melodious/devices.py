@@ -125,6 +125,9 @@ class Entity:
     device_id: str | None = None
     platform: str | None = None
     state: str | None = None
+    # Allowlisted webOS observations, never raw service responses.
+    webos_inputs: list[dict[str, Any]] | None = None
+    webos_theater: dict[str, Any] | None = None
 
     @property
     def domain(self) -> str:
@@ -387,28 +390,32 @@ def _webostv_media_player(entity: Entity) -> tuple[list[tuple[str, str]], dict |
     add("ChannelUp", "button:CHANNELUP")
     add("ChannelDown", "button:CHANNELDOWN")
 
-    if features & MP_SELECT_SOURCE:
+    if features & MP_SELECT_SOURCE and entity.webos_inputs is not None:
         taken = {n.lower() for n, _ in commands}
         seen: set[str] = set()
         apps: list[tuple[str, str]] = []
+        port_labels = set()
+        for port in entity.webos_inputs:
+            label = port["id"].replace("_", " ")
+            name = f"Input {label}"
+            add(name, f"webos_input:{port['id']}")
+            taken.add(name.lower())
+            inputs.append({"name": label, "command": name})
+            port_labels.add(port["label"].casefold())
+            if port.get("cec_name"):
+                port_labels.add(port["cec_name"].casefold())
         for source in entity.attributes.get("source_list") or []:
             source = str(source)
             label = clean_label(source)
             value = f"select_source:{source}"
+            if label.casefold() in port_labels or re.fullmatch(r"HDMI[ _]?\d+", label, re.I):
+                continue
             if not label or label != source or not _value_ok(value) or label.lower() in seen:
                 continue
             seen.add(label.lower())
-            if _is_input_source(label):
-                if len(inputs) >= MAX_INPUTS:
-                    continue
-                name = input_command_name(label, taken)
-                taken.add(name.lower())
-                add(name, value)
-                inputs.append({"name": label, "command": name})
-            else:
-                name = _prefixed_command_name("App", label, taken)
-                taken.add(name.lower())
-                apps.append((name, value))
+            name = _prefixed_command_name("App", label, taken)
+            taken.add(name.lower())
+            apps.append((name, value))
         # Apps last: the 128-command trim drops them before real controls.
         commands.extend(apps)
 
@@ -744,6 +751,28 @@ def merge_device(
     previous = _v2_previous(previous, entities_table) if previous else None
     if previous:
         spec = _merge(spec, previous)
+    # Upgrade old HDMI actions in place, including misclassified App commands.
+    # Keeping their names lets the hub preserve command IDs and references.
+    webos = {e.entity_id: e for e in group.entities if e.platform == "webostv"}
+    for command in spec["commands"]:
+        resolved = resolve_v2_command(spec, command["value"])
+        if resolved is None or resolved[0] not in webos:
+            continue
+        entity = webos[resolved[0]]
+        match = re.fullmatch(r"Input HDMI ([1-9]\d*)", command["name"], re.I)
+        port_id = f"HDMI_{match[1]}" if match else None
+        if resolved[1].startswith("select_source:"):
+            label = resolved[1].split(":", 1)[1]
+            port_id = port_id or next((p["id"] for p in entity.webos_inputs or []
+                                       if label in (p["label"], p.get("cec_name"))), None)
+        if port_id:
+            alias = command["value"].split(":", 1)[0]
+            command["value"] = f"{alias}:webos_input:{port_id}"
+    if any(e.webos_inputs is not None for e in webos.values()):
+        # Inputs are stable port keys. Legacy app commands remain callable but
+        # are no longer offered as physical inputs.
+        spec["inputs"] = [i for i in spec.get("inputs", [])
+                          if re.fullmatch(r"HDMI [1-9]\d*", i["name"])]
     if disabled:
         # The previous-set merge keeps old commands by name; a disabled
         # command must not come back through it.
@@ -896,6 +925,11 @@ def service_call(
     target = {"entity_id": entity_id}
     if platform == "webostv" and action == "button" and argument:
         return "webostv", "button", {**target, "button": argument}
+    if domain == "media_player" and platform == "webostv" and action == "webos_input" \
+            and re.fullmatch(r"HDMI_[1-9]\d*", argument):
+        return "webostv", "command", {
+            **target, "command": "tv/switchInput", "payload": {"inputId": argument},
+        }
     if domain == "media_player" and action == "select_source" and argument:
         return domain, "select_source", {**target, "source": argument}
     if domain == "media_player" and action == "mute" and not argument:
@@ -1070,7 +1104,7 @@ def device_state_snapshot(
         else:
             playing = "unknown"
 
-    return {
+    snapshot = {
         "key": key,
         "available": available,
         "power": power,
@@ -1083,6 +1117,24 @@ def device_state_snapshot(
         "updated": int(updated),
         "entities": entity_states,
     }
+    webos = next((e for e in ordered if e.platform == "webostv" and e.domain == "media_player"), None)
+    if webos is not None:
+        theater = webos.webos_theater if _normalize_power(webos.state, webos.available) == "on" else None
+        snapshot["theater"] = theater
+        # CEC labels are not app names. Foreground identity is authoritative.
+        snapshot["source"] = (theater.get("active_input") or {}).get("label") if theater else None
+        if theater and theater.get("active_input"):
+            snapshot["activity"] = None
+        elif not theater or not theater.get("foreground_app"):
+            snapshot["activity"] = None
+        sound = theater.get("sound") if theater else None
+        snapshot["volume"] = sound["volume"] / 100 if sound and sound.get("volume") is not None else None
+        snapshot["muted"] = sound.get("muted") if sound else None
+        if not theater:
+            snapshot["activity"] = None
+            snapshot["volume"] = None
+            snapshot["muted"] = None
+    return snapshot
 
 
 def build_state_payload(
@@ -1091,6 +1143,7 @@ def build_state_payload(
     device_set: dict | None,
     seq: int,
     updated: int,
+    theater_links: list[dict] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """The full {"states": [...]} payload for POST /api/ha-state."""
     sent_devices = (device_set or {}).get("devices") or []
@@ -1117,7 +1170,9 @@ def build_state_payload(
                 by_entity.get(eid) or Entity(eid, eid, available=False, state="unavailable")
                 for eid in member_ids
             ]
-            states.append(device_state_snapshot(key, members, seq, updated, aliases))
+            snapshot = device_state_snapshot(key, members, seq, updated, aliases)
+            _attach_theater_links(snapshot, members, theater_links)
+            states.append(snapshot)
         return {"states": states}
 
     by_id = {e.entity_id: e for e in entities}
@@ -1126,5 +1181,20 @@ def build_state_payload(
         if not key:
             continue
         ent = by_id.get(key) or Entity(key, key, available=False, state="unavailable")
-        states.append(device_state_snapshot(key, [ent], seq, updated))
+        snapshot = device_state_snapshot(key, [ent], seq, updated)
+        _attach_theater_links(snapshot, [ent], theater_links)
+        states.append(snapshot)
     return {"states": states}
+
+
+def _attach_theater_links(snapshot: dict, members: list[Entity], links: list[dict] | None) -> None:
+    webos_ids = {e.entity_id for e in members if e.platform == "webostv"}
+    if not webos_ids:
+        return
+    snapshot["theater_links"] = [
+        {"port": link["port_id"], "device_id": str(link["hub_device_id"])}
+        for link in links or [] if isinstance(link, dict)
+        and link.get("entity_id") in webos_ids
+        and re.fullmatch(r"HDMI_[1-9]\d?", str(link.get("port_id", "")))
+        and re.fullmatch(r"\d{1,20}", str(link.get("hub_device_id", "")))
+    ]

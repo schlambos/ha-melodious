@@ -28,14 +28,24 @@
         "description": "Pick whole devices to merge into one Harmony device each, and/or single entities. The next step reviews each device. Removing one takes it off the hub, unless an activity or button still uses it.",
         "data": {
           "devices": "Devices (merged into one Harmony device each)",
-          "entities": "Single entities"
+          "entities": "Single entities",
+          "edit_theater_links": "Edit LG HDMI device links (display only)"
         }
       },
       "review": {
         "title": "Review merged devices",
         "description": "Per device: which entities to merge, and which commands to leave off the hub.{warnings}",
         "data": {}
+      },
+      "theater": {
+        "title": "Link LG HDMI gear",
+        "description": "For each HDMI port, optionally select existing hub devices whose screens should show the TV's observations. Links do not change commands, activities or power control. Turn the TV on yourself for first-time port discovery. ARC volume is TV-reported, not independently measured soundbar volume; power stays unknown.",
+        "data": {}
       }
+    },
+    "error": {
+      "cannot_connect": "Could not read the hub. Try again.",
+      "unknown_device": "A selected hub device no longer exists. Select it again."
     }
   }
 }
