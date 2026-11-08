@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.melodious import MelodiousRuntime
 from custom_components.melodious.config_flow import MelodiousOptionsFlow
+from custom_components.melodious.const import REFUSED_RETRY_SECONDS
+from custom_components.melodious.hub import HubRefused
 from custom_components.melodious.devices import DeviceGroup, Entity
 from custom_components.melodious.webos import INPUTS, VOLUME, FOREGROUND
 
@@ -79,6 +81,43 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             "entity_id": ENTITY, "command": "tv/switchInput", "payload": {"inputId": "HDMI_1"}}, blocking=True)
         self.assertEqual(refreshed, [True])
         self.assertEqual(self.hass.bus.async_fire.call_args.args[1]["command"], "Input HDMI 1")
+
+    async def test_refused_set_is_not_sent_again_until_it_changes(self):
+        # A refusal is the hub's answer to that exact set; every re-send cost
+        # the hub a flash backup and stalled its engine (remote presses timed out).
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        client = self.runtime.client
+        client.device_names = AsyncMock(return_value=set())
+        client.features = AsyncMock(return_value={"ha-devices-v2"})
+        client.commit = AsyncMock(side_effect=HubRefused("activities still use inputs"))
+        self.runtime.sent = {"webhook": "http://ha/api/webhook/hook", "devices": []}
+        self.runtime.groups = lambda: []
+        self.runtime.entities = lambda: [Entity("light.lamp", "Lamp", state="on")]
+        with patch("custom_components.melodious.persistent_notification"), \
+                patch("custom_components.melodious.async_call_later") as later:
+            self.runtime._schedule_push_if_changed()
+            self.assertEqual(later.call_count, 1)
+            self.runtime._timer = None
+            await self.runtime.async_push()
+            self.assertEqual(client.commit.await_count, 1)
+            for _ in range(5):
+                self.runtime._schedule_push_if_changed()
+                await self.runtime.async_push()
+            self.assertEqual(later.call_count, 1)
+            self.assertEqual(client.commit.await_count, 1)
+            # A different set goes out at once.
+            self.runtime.entities = lambda: [Entity("light.lamp", "Lamp", state="on"),
+                                             Entity("light.desk", "Desk", state="on")]
+            self.runtime._schedule_push_if_changed()
+            self.assertEqual(later.call_count, 2)
+            # So does the refused one, once the retry window is up.
+            self.runtime._timer = None
+            self.runtime.entities = lambda: [Entity("light.lamp", "Lamp", state="on")]
+            self.runtime._refused_at -= REFUSED_RETRY_SECONDS
+            self.runtime._schedule_push_if_changed()
+            self.assertEqual(later.call_count, 3)
+            await self.runtime.async_push(force=True)
+            self.assertEqual(client.commit.await_count, 2)
 
 
 class OptionsTests(unittest.IsolatedAsyncioTestCase):
