@@ -107,3 +107,7 @@ class HubClient:
     async def commit(self, device_set: dict, dry_run: bool = False) -> dict:
         """Replace the hub's Home Assistant devices. The writer can take up to 45 s."""
         return await self._request("POST", "/api/ha-devices", {**device_set, "dryRun": dry_run}, timeout=120)
+
+    async def push_state(self, state_payload: dict) -> dict:
+        """POST /api/ha-state. Volatile state snapshot (tmpfs only on the hub)."""
+        return await self._request("POST", "/api/ha-state", state_payload, timeout=10)

@@ -10,7 +10,9 @@ Assistant token lives on the hub; the webhook ID is the only secret.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 import logging
+import time
 from typing import Any
 
 from aiohttp import web
@@ -20,17 +22,28 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, STATE_UNAVAILABLE, Platform
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 
-from .const import CONF_DEVICES, CONF_ENTITIES, CONF_HA_URL, CONF_WEBHOOK_ID, DOMAIN, PUSH_DELAY_SECONDS, RETRY_SECONDS
+from .const import (
+    CONF_DEVICES,
+    CONF_ENTITIES,
+    CONF_HA_URL,
+    CONF_WEBHOOK_ID,
+    DOMAIN,
+    PUSH_DELAY_SECONDS,
+    RETRY_SECONDS,
+    STATE_DEBOUNCE_SECONDS,
+    STATE_HEARTBEAT_SECONDS,
+)
 from .devices import (
     DeviceGroup,
     Entity,
     allowed_values,
     build_device_set,
     build_merged_set,
+    build_state_payload,
     resolve_v2_command,
     service_call,
 )
@@ -68,6 +81,13 @@ class MelodiousRuntime:
         self.taken_names: set[str] = set()
         self._lock = asyncio.Lock()
         self._timer: CALLBACK_TYPE | None = None
+        # Volatile state push (separate lock/timer from the device-set writer).
+        self._state_lock = asyncio.Lock()
+        self._state_timer: CALLBACK_TYPE | None = None
+        self._state_seq = 0
+        self._last_state_push = 0.0
+        self._ha_state_supported: bool | None = None
+        self._ha_state_skip_logged = False
 
     @property
     def webhook_url(self) -> str:
@@ -89,7 +109,8 @@ class MelodiousRuntime:
             platform = reg_entry.platform if reg_entry else None
             if state is None:
                 out.append(Entity(entity_id, entity_id, available=False,
-                                 device_id=device_id, platform=platform))
+                                 device_id=device_id, platform=platform,
+                                 state=STATE_UNAVAILABLE))
                 continue
             out.append(
                 Entity(
@@ -101,6 +122,7 @@ class MelodiousRuntime:
                     attributes=dict(state.attributes),
                     device_id=device_id,
                     platform=platform,
+                    state=state.state,
                 )
             )
         return out
@@ -136,6 +158,7 @@ class MelodiousRuntime:
                     attributes=dict(state.attributes) if state else {},
                     device_id=device_id,
                     platform=reg_entry.platform,
+                    state=state.state if state else STATE_UNAVAILABLE,
                 ))
             groups.append(DeviceGroup(device_id, name or device_id, manufacturer, model, members))
         return groups
@@ -191,11 +214,12 @@ class MelodiousRuntime:
                     except HubError:
                         self._hub_seed = {"devices": []}
                 groups = self.groups()
+                try:
+                    features = await self.client.features()
+                    self._ha_state_supported = "ha-state" in features
+                except HubError:
+                    features = {"ha-devices-v2"} if groups else set()
                 if groups:
-                    try:
-                        features = await self.client.features()
-                    except HubError:
-                        features = {"ha-devices-v2"}
                     if "ha-devices-v2" not in features:
                         persistent_notification.async_create(
                             self.hass,
@@ -240,6 +264,7 @@ class MelodiousRuntime:
                     "Hub devices: added %s, updated %s, removed %s",
                     result.get("added") or [], result.get("updated") or [], result.get("removed") or [],
                 )
+        self.schedule_state_push(immediate=True)
 
     @callback
     def _timer_fired(self, _now: Any) -> None:
@@ -253,8 +278,70 @@ class MelodiousRuntime:
             self._timer = None
 
     @callback
+    def _cancel_state_timer(self) -> None:
+        if self._state_timer:
+            self._state_timer()
+            self._state_timer = None
+
+    @callback
+    def schedule_state_push(self, immediate: bool = False) -> None:
+        """Coalesce state changes (2 s debounce, never more than once per 2 s)."""
+        if self._state_timer is not None or self.sent is None:
+            return
+        now = time.monotonic()
+        elapsed = now - self._last_state_push
+        if immediate and elapsed >= STATE_DEBOUNCE_SECONDS:
+            self.entry.async_create_background_task(
+                self.hass, self.async_push_state(), f"{DOMAIN} state push"
+            )
+            return
+        delay = STATE_DEBOUNCE_SECONDS if not immediate else max(0.1, STATE_DEBOUNCE_SECONDS - elapsed)
+        if elapsed < STATE_DEBOUNCE_SECONDS:
+            delay = max(delay, STATE_DEBOUNCE_SECONDS - elapsed)
+        self._state_timer = async_call_later(self.hass, delay, self._state_timer_fired)
+
+    @callback
+    def _state_timer_fired(self, _now: Any) -> None:
+        self._state_timer = None
+        self.entry.async_create_background_task(
+            self.hass, self.async_push_state(), f"{DOMAIN} state push"
+        )
+
+    @callback
+    def _heartbeat_fired(self, _now: Any) -> None:
+        self.schedule_state_push(immediate=True)
+
+    async def async_push_state(self) -> None:
+        """Push one batched volatile state snapshot for all exposed devices."""
+        if self.sent is None:
+            return
+        async with self._state_lock:
+            now = time.monotonic()
+            if (now - self._last_state_push) < STATE_DEBOUNCE_SECONDS:
+                self.schedule_state_push(immediate=False)
+                return
+            if self._ha_state_supported is None:
+                features = await self.client.features()
+                self._ha_state_supported = "ha-state" in features
+            if not self._ha_state_supported:
+                if not self._ha_state_skip_logged:
+                    self._ha_state_skip_logged = True
+                    _LOGGER.debug("Hub does not advertise ha-state in /api/version; skipping state pushes")
+                return
+            self._state_seq += 1
+            payload = build_state_payload(
+                self.groups(), self.entities(), self.sent, self._state_seq, int(time.time())
+            )
+            self._last_state_push = time.monotonic()
+            try:
+                await self.client.push_state(payload)
+            except HubError as err:
+                _LOGGER.debug("Could not push Home Assistant state to the hub: %s", err)
+
+    @callback
     def async_state_changed(self, _event: Event[EventStateChangedData]) -> None:
-        """Push again only when the set itself would change, not on every state update."""
+        """Push the device set only when it would change; always schedule a state push."""
+        self.schedule_state_push(immediate=False)
         if self._timer is None and self.sent is not None and self._build() != self.sent:
             self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
 
@@ -278,6 +365,7 @@ class MelodiousRuntime:
                 _LOGGER.warning("Ignoring %s for %s: unknown alias", value, device_key)
                 return
             entity_id, action = resolved
+        if device is not None:
             command_name = next(
                 (c["name"] for c in device.get("commands", []) if c.get("value") == value),
                 value,
@@ -332,6 +420,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
     )
     entry.async_on_unload(lambda: webhook.async_unregister(hass, entry.data[CONF_WEBHOOK_ID]))
     entry.async_on_unload(runtime._cancel_timer)
+    entry.async_on_unload(runtime._cancel_state_timer)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     tracked = set(entry.options.get(CONF_ENTITIES, []))
     for group in runtime.groups():
@@ -339,10 +428,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
     entry.async_on_unload(
         async_track_state_change_event(hass, sorted(tracked), runtime.async_state_changed)
     )
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass, runtime._heartbeat_fired, timedelta(seconds=STATE_HEARTBEAT_SECONDS)
+        )
+    )
 
     async def push_when_started(_hass: HomeAssistant) -> None:
         # Once per start: the hub may have been reset since the last push.
         await runtime.async_push(force=True)
+        runtime.schedule_state_push(immediate=True)
 
     entry.async_on_unload(async_at_started(hass, push_when_started))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

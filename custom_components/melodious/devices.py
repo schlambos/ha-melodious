@@ -124,6 +124,7 @@ class Entity:
     # HA device registry data, when the entity was picked via a device.
     device_id: str | None = None
     platform: str | None = None
+    state: str | None = None
 
     @property
     def domain(self) -> str:
@@ -928,3 +929,194 @@ def hub_ha_devices(config: dict) -> list[dict]:
                 commands.append({"name": command["Name"], "value": value})
         devices.append({"entity": key, "name": device.get("Name", ""), "commands": commands})
     return devices
+
+
+def _normalize_power(state_str: str | None, available: bool) -> str:
+    if not available or state_str in (None, "", "unavailable", "unknown"):
+        return "unknown"
+    low = str(state_str).lower()
+    if low in ("off", "standby", "closed"):
+        return "off"
+    if low in ("on", "idle", "playing", "paused", "buffering", "open", "opening", "closing"):
+        return "on"
+    return "unknown"
+
+
+def _normalize_playing(state_str: str | None, available: bool) -> str:
+    if not available or state_str in (None, "", "unavailable", "unknown"):
+        return "unknown"
+    low = str(state_str).lower()
+    if low in ("playing", "paused", "idle", "off"):
+        return low
+    if low == "standby":
+        return "off"
+    if low in ("on", "buffering"):
+        return "idle"
+    return "unknown"
+
+
+def _entity_priority(entity: Entity) -> tuple[int, str]:
+    """Priority order for resolving overlapping state roles (§3.4)."""
+    domain, platform = entity.domain, entity.platform
+    if domain == "media_player" and platform in ("webostv", "androidtv_remote", "androidtv"):
+        return (0, entity.entity_id)
+    if domain == "remote" and platform in ("androidtv_remote", "androidtv"):
+        return (1, entity.entity_id)
+    if domain == "media_player" and platform != "cast":
+        return (2, entity.entity_id)
+    if domain == "media_player":
+        return (3, entity.entity_id)
+    if domain == "select":
+        return (4, entity.entity_id)
+    if domain in ("light", "switch", "input_boolean", "fan", "cover"):
+        return (5, entity.entity_id)
+    return (6, entity.entity_id)
+
+
+def device_state_snapshot(
+    key: str,
+    entities: list[Entity],
+    seq: int,
+    updated: int,
+    aliases: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """One device's state snapshot for POST /api/ha-state (design §5.1).
+
+    Pure function: never invents state. If a field's entity is missing or
+    unavailable, the field is None / 'unknown', never 'off'.
+    """
+    alias_map = aliases or {}
+    ordered = sorted(entities, key=_entity_priority)
+    available = any(e.available and e.state not in (None, "unavailable") for e in entities)
+    entity_states: dict[str, str] = {}
+    for e in sorted(entities, key=lambda item: item.entity_id):
+        alias = alias_map.get(e.entity_id, e.entity_id)
+        if not e.available or e.state is None:
+            entity_states[alias] = "unavailable"
+        else:
+            entity_states[alias] = str(e.state)
+
+    power = "unknown"
+    for e in ordered:
+        if e.domain in ("media_player", "remote", "light", "switch", "input_boolean", "fan", "cover"):
+            candidate = _normalize_power(e.state, e.available)
+            if candidate != "unknown":
+                power = candidate
+                break
+
+    source: str | None = None
+    volume: float | None = None
+    muted: bool | None = None
+    playing = "unknown"
+    mp_activity: str | None = None
+    remote_activity: str | None = None
+
+    for e in ordered:
+        if not e.available or e.state in (None, "unavailable"):
+            continue
+        attrs = e.attributes or {}
+        if e.domain == "media_player":
+            if playing == "unknown":
+                playing = _normalize_playing(e.state, e.available)
+            if volume is None and isinstance(attrs.get("volume_level"), (int, float)) \
+                    and not isinstance(attrs.get("volume_level"), bool):
+                vol = float(attrs["volume_level"])
+                if 0.0 <= vol <= 1.0:
+                    volume = round(vol, 4)
+            if muted is None and isinstance(attrs.get("is_volume_muted"), bool):
+                muted = attrs["is_volume_muted"]
+            raw_source = attrs.get("source")
+            if isinstance(raw_source, str) and raw_source.strip():
+                src = raw_source.strip()
+                if e.platform == "webostv":
+                    if _is_input_source(src):
+                        if source is None:
+                            source = src
+                    elif mp_activity is None:
+                        mp_activity = src
+                elif e.platform in ("androidtv_remote", "androidtv", "cast"):
+                    if mp_activity is None:
+                        mp_activity = src
+                elif source is None:
+                    source = src
+            for attr_key in ("app_name", "app_id"):
+                val = attrs.get(attr_key)
+                if mp_activity is None and isinstance(val, str) and val.strip():
+                    mp_activity = val.strip()
+        elif e.domain == "select":
+            opt = attrs.get("current_option")
+            if not (isinstance(opt, str) and opt.strip()):
+                opt = e.state if e.state not in ("unknown", "unavailable") else None
+            if source is None and isinstance(opt, str) and opt.strip():
+                source = opt.strip()
+        elif e.domain == "remote":
+            cur = attrs.get("current_activity")
+            if remote_activity is None and isinstance(cur, str) and cur.strip():
+                remote_activity = cur.strip()
+
+    activity = remote_activity or mp_activity
+    if power != "on":
+        # When off or unknown, stale source/app attributes on an entity are not active.
+        if power == "off":
+            playing = "off" if any(e.domain == "media_player" for e in entities) else "unknown"
+        else:
+            playing = "unknown"
+
+    return {
+        "key": key,
+        "available": available,
+        "power": power,
+        "source": source if available else None,
+        "volume": volume if available else None,
+        "muted": muted if available else None,
+        "playing": playing if available else "unknown",
+        "activity": activity if available else None,
+        "seq": int(seq),
+        "updated": int(updated),
+        "entities": entity_states,
+    }
+
+
+def build_state_payload(
+    groups: list[DeviceGroup],
+    entities: list[Entity],
+    device_set: dict | None,
+    seq: int,
+    updated: int,
+) -> dict[str, list[dict[str, Any]]]:
+    """The full {"states": [...]} payload for POST /api/ha-state."""
+    sent_devices = (device_set or {}).get("devices") or []
+    states: list[dict[str, Any]] = []
+
+    if groups:
+        kept_groups, _ = suppress_cast_twins(groups)
+        by_entity: dict[str, Entity] = {
+            e.entity_id: e for g in kept_groups for e in g.entities
+        }
+        for spec in sent_devices[:MAX_DEVICES]:
+            key = spec.get("key") or spec.get("entity")
+            if not key:
+                continue
+            aliases = {
+                item["entity"]: item["alias"]
+                for item in spec.get("entities") or []
+                if item.get("entity") and item.get("alias")
+            }
+            member_ids = [
+                item["entity"] for item in spec.get("entities") or [] if item.get("entity")
+            ] or [key]
+            members = [
+                by_entity.get(eid) or Entity(eid, eid, available=False, state="unavailable")
+                for eid in member_ids
+            ]
+            states.append(device_state_snapshot(key, members, seq, updated, aliases))
+        return {"states": states}
+
+    by_id = {e.entity_id: e for e in entities}
+    for spec in sent_devices[:MAX_DEVICES]:
+        key = spec.get("entity") or spec.get("key")
+        if not key:
+            continue
+        ent = by_id.get(key) or Entity(key, key, available=False, state="unavailable")
+        states.append(device_state_snapshot(key, [ent], seq, updated))
+    return {"states": states}
