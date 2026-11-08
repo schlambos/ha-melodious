@@ -872,5 +872,22 @@ class StateSnapshotTests(unittest.TestCase):
         self.assertEqual(by_key[GOOGLE_TV_MP]["seq"], 9)
 
 
+class StableAliasTests(unittest.TestCase):
+    def test_a_tv_that_is_off_keeps_its_short_alias(self):
+        long_app = "Weekend Games - Song Quiz, Jeopardy! and CoComelon"
+        def lg(sources):
+            entity = Entity("media_player.lg_webos_tv_oled65c4pua_2", "LG", True, 24509,
+                            {"source_list": sources}, platform="webostv")
+            return devices.DeviceGroup("lg", "LG TV", "LG", "OLED", [entity])
+        on = devices.merge_device(lg(["HDMI 1", long_app]), key="media_player.lg_webos_tv_oled65c4pua_2")
+        alias = on["entities"][0]["alias"]
+        self.assertTrue(alias.startswith("e"), alias)
+        off = devices.merge_device(lg([]), key="media_player.lg_webos_tv_oled65c4pua_2", previous=on)
+        self.assertEqual(off["entities"][0]["alias"], alias)
+        values = {c["name"]: c["value"] for c in off["commands"]}
+        self.assertIn(long_app, values["App Weekend Games - Song Quiz Jeopardy and C"])
+        self.assertTrue(all(len(v) <= devices.MAX_VALUE for v in values.values()))
+
+
 if __name__ == "__main__":
     unittest.main()

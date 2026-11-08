@@ -668,20 +668,28 @@ def merge_device(
     power = None
     inputs: list[dict] = []
     entities_table: list[dict] = []
+    # An alias never grows back: a TV that's off reports a short source list,
+    # but its earlier long app commands still have to fit beside the alias.
+    previous_alias = {item.get("entity"): item.get("alias")
+                      for item in (previous or {}).get("entities") or []}
+    v1_actions = ([str(c.get("value", "")) for c in (previous or {}).get("commands") or []]
+                  if previous and previous.get("entity") and not previous.get("entities") else [])
     for entity in sorted(group.entities, key=lambda e: e.entity_id):
         if not _ENTITY_RE.match(entity.entity_id):
             continue
-        alias = entity.entity_id
+        alias = previous_alias.get(entity.entity_id) or entity.entity_id
         entities_table.append({"alias": alias, "entity": entity.entity_id})
         if entity.domain not in SUPPORTED_DOMAINS:
             continue
         names, entity_power, entity_inputs = _commands_for(entity, merged=True)
         if not names:
             continue
+        actions = [action for _, action in names]
+        if previous and previous.get("entity") == entity.entity_id:
+            actions += v1_actions
         # The alias must fit the hub's 64-char alias limit and every
         # "<alias>:<action>" value the entity contributes must fit 96 chars.
-        if len(alias) > 64 or any(len(f"{alias}:{action}") > MAX_VALUE
-                                  for _, action in names):
+        if len(alias) > 64 or any(len(f"{alias}:{action}") > MAX_VALUE for action in actions):
             alias = _short_alias(entity.entity_id)
             entities_table[-1]["alias"] = alias
         if not entity.available:
