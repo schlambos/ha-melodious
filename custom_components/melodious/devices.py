@@ -903,3 +903,28 @@ def service_call(
         return None
     service, data = known
     return domain, service, {**target, **data}
+
+
+def hub_ha_devices(config: dict) -> list[dict]:
+    """The hub's Home Assistant devices from /api/activity-config, as v1 specs.
+
+    In DevicesWithFeatures, Commands is a sibling of Device, not inside it.
+    """
+    devices = []
+    for entry in (config.get("deviceList") or {}).get("DevicesWithFeatures") or []:
+        device = entry.get("Device") or {}
+        tag = str((device.get("AutoDetectedDevice") or {}).get("Id") or "")
+        if not tag.startswith("melodious-ha-"):
+            continue
+        tokens = (device.get("Tokens") or {}).get("Parameters") or []
+        key = next((t.get("Value") for t in tokens if t.get("Key") == "{d}"), None)
+        if not key:
+            continue
+        commands = []
+        for command in entry.get("Commands") or []:
+            value = next((p.get("Value") for p in command.get("Parameters") or []
+                          if p.get("Key") == "{c}"), None)
+            if command.get("Name") and value:
+                commands.append({"name": command["Name"], "value": value})
+        devices.append({"entity": key, "name": device.get("Name", ""), "commands": commands})
+    return devices

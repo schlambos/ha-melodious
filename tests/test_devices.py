@@ -754,5 +754,19 @@ class NewShapeCoverageTests(unittest.TestCase):
                 self.assertNotIn(c["name"], ("ENTER", "DPAD_CENTER", "KEYCODE_DPAD_CENTER"))
 
 
+class HubSeedTests(unittest.TestCase):
+    def test_commands_are_read_beside_the_device(self):
+        config = {"deviceList": {"DevicesWithFeatures": [
+            {"Device": {"Name": "Amp", "AutoDetectedDevice": {"Id": "melodious-ha-1"},
+                        "Tokens": {"Parameters": [{"Key": "{d}", "Value": "media_player.amp"}]}},
+             "Commands": [{"Name": "SkipForward", "Parameters": [{"Key": "{c}", "Value": "media_next_track"}]}]},
+            {"Device": {"Name": "IR TV", "AutoDetectedDevice": None}, "Commands": [{"Name": "PowerOn"}]},
+        ]}}
+        self.assertEqual(devices.hub_ha_devices(config), [{
+            "entity": "media_player.amp", "name": "Amp",
+            "commands": [{"name": "SkipForward", "value": "media_next_track"}],
+        }])
+
+
 if __name__ == "__main__":
     unittest.main()

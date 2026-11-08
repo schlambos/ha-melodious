@@ -6,6 +6,8 @@ from typing import Any
 
 import aiohttp
 
+from .devices import hub_ha_devices
+
 
 class HubError(Exception):
     """The hub couldn't be reached or didn't take the request."""
@@ -78,26 +80,7 @@ class HubClient:
     async def ha_devices(self) -> list[dict]:
         """The hub's current HA device specs, for seeding _previous on first run."""
         config = await self._request("GET", "/api/activity-config")
-        devices = []
-        for entry in (config.get("deviceList") or {}).get("DevicesWithFeatures") or []:
-            device = entry.get("Device") or {}
-            tag = str((device.get("AutoDetectedDevice") or {}).get("Id") or "")
-            if not tag.startswith("melodious-ha-"):
-                continue
-            tokens = device.get("Tokens", {}).get("Parameters") or []
-            key_token = next((t["Value"] for t in tokens if t.get("Key") == "{d}"), None)
-            commands = [
-                {"name": c["Name"], "value": next(
-                    (t["Value"] for t in (c.get("Parameters") or []) if t.get("Key") == "{c}"), c["Name"]
-                )}
-                for c in device.get("Commands") or []
-                if c.get("Name")
-            ]
-            spec: dict = {"name": device.get("Name", ""), "commands": commands}
-            if key_token:
-                spec["entity"] = key_token
-            devices.append(spec)
-        return devices
+        return hub_ha_devices(config)
 
     async def commit(self, device_set: dict, dry_run: bool = False) -> dict:
         """Replace the hub's Home Assistant devices. The writer can take up to 45 s."""
