@@ -13,3 +13,7 @@ DEFAULT_PORT = 8080
 PUSH_DELAY_SECONDS = 5
 # How long to wait before trying the hub again after it couldn't take a set.
 RETRY_SECONDS = 60
+
+# Coalesce live state updates and send a heartbeat within the hub's 90 s stale window.
+STATE_DEBOUNCE_SECONDS = 2
+STATE_HEARTBEAT_SECONDS = 30

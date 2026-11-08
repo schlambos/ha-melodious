@@ -768,5 +768,109 @@ class HubSeedTests(unittest.TestCase):
         }])
 
 
+class StateSnapshotTests(unittest.TestCase):
+    def test_lg_webos_input_vs_app_and_volume(self):
+        ent = lg_tv(source="HDMI 1", volume_level=0.35, is_volume_muted=False)
+        ent.state = "on"
+        snap = devices.device_state_snapshot(LG_ENTITY, [ent], seq=7, updated=1762500000)
+        self.assertEqual(snap, {
+            "key": LG_ENTITY,
+            "available": True,
+            "power": "on",
+            "source": "HDMI 1",
+            "volume": 0.35,
+            "muted": False,
+            "playing": "idle",
+            "activity": None,
+            "seq": 7,
+            "updated": 1762500000,
+            "entities": {LG_ENTITY: "on"},
+        })
+
+        app_ent = lg_tv(source="Netflix", volume_level=0.2, is_volume_muted=True)
+        app_ent.state = "playing"
+        app_snap = devices.device_state_snapshot(
+            LG_ENTITY, [app_ent], seq=8, updated=1762500005, aliases={LG_ENTITY: "e12345678"}
+        )
+        self.assertEqual(app_snap["power"], "on")
+        self.assertIsNone(app_snap["source"])
+        self.assertEqual(app_snap["activity"], "Netflix")
+        self.assertEqual(app_snap["playing"], "playing")
+        self.assertEqual(app_snap["muted"], True)
+        self.assertEqual(app_snap["entities"], {"e12345678": "playing"})
+
+    def test_google_tv_merged_entities_snapshot(self):
+        mp_ent, rem_ent = google_tv()
+        mp_ent.state = "playing"
+        mp_ent.attributes.update({"volume_level": 0.5, "is_volume_muted": False})
+        rem_ent.state = "on"
+        snap = devices.device_state_snapshot(
+            GOOGLE_TV_MP, [mp_ent, rem_ent], seq=12, updated=1762500010
+        )
+        self.assertEqual(snap["available"], True)
+        self.assertEqual(snap["power"], "on")
+        self.assertIsNone(snap["source"])
+        self.assertEqual(snap["activity"], "tv.emby.embyatv")
+        self.assertEqual(snap["playing"], "playing")
+        self.assertEqual(snap["volume"], 0.5)
+        self.assertEqual(snap["muted"], False)
+        self.assertEqual(
+            snap["entities"],
+            {GOOGLE_TV_MP: "playing", GOOGLE_TV_REMOTE: "on"},
+        )
+
+    def test_standby_maps_to_off_and_idle_paused_map_to_on(self):
+        ent = mp()
+        ent.state = "standby"
+        snap = devices.device_state_snapshot(ent.entity_id, [ent], seq=1, updated=100)
+        self.assertEqual(snap["power"], "off")
+        self.assertEqual(snap["playing"], "off")
+
+        for active in ("idle", "playing", "paused", "on"):
+            ent.state = active
+            snap = devices.device_state_snapshot(ent.entity_id, [ent], seq=2, updated=101)
+            self.assertEqual(snap["power"], "on")
+
+    def test_unavailable_or_missing_never_invents_off(self):
+        down = Entity("media_player.tv", "TV", available=False, state="unavailable",
+                      attributes={"source": "HDMI 1", "volume_level": 0.4, "is_volume_muted": False})
+        snap = devices.device_state_snapshot("media_player.tv", [down], seq=3, updated=200)
+        self.assertEqual(snap["available"], False)
+        self.assertEqual(snap["power"], "unknown")
+        self.assertEqual(snap["playing"], "unknown")
+        self.assertIsNone(snap["source"])
+        self.assertIsNone(snap["volume"])
+        self.assertIsNone(snap["muted"])
+        self.assertIsNone(snap["activity"])
+        self.assertEqual(snap["entities"], {"media_player.tv": "unavailable"})
+
+    def test_select_entity_populates_source(self):
+        sel = Entity("select.avr_input", "AVR input", available=True, state="HDMI 2",
+                     attributes={"options": ["HDMI 1", "HDMI 2"], "current_option": "HDMI 2"})
+        snap = devices.device_state_snapshot("select.avr_input", [sel], seq=4, updated=300)
+        self.assertEqual(snap["available"], True)
+        self.assertEqual(snap["power"], "unknown")
+        self.assertEqual(snap["source"], "HDMI 2")
+
+    def test_build_state_payload_batches_merged_and_v1_sets(self):
+        lg = lg_tv(source="HDMI 4")
+        lg.state = "on"
+        gt_mp, gt_rem = google_tv()
+        gt_mp.state = "off"
+        gt_rem.state = "off"
+        groups = [
+            group("lg", "LG webOS TV OLED65C4PUA", [lg]),
+            group("gt", "Living Room TV", [gt_mp, gt_rem]),
+        ]
+        device_set, _ = devices.build_merged_set(WEBHOOK, groups, {}, {}, {})
+        payload = devices.build_state_payload(groups, [], device_set, seq=9, updated=400)
+        by_key = {s["key"]: s for s in payload["states"]}
+        self.assertEqual(by_key[LG_ENTITY]["power"], "on")
+        self.assertEqual(by_key[LG_ENTITY]["source"], "HDMI 4")
+        self.assertEqual(by_key[GOOGLE_TV_MP]["power"], "off")
+        self.assertEqual(by_key[GOOGLE_TV_MP]["playing"], "off")
+        self.assertEqual(by_key[GOOGLE_TV_MP]["seq"], 9)
+
+
 if __name__ == "__main__":
     unittest.main()
