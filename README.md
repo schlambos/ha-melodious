@@ -19,7 +19,7 @@ It also works the other way round: the hub appears in Home Assistant as a `remot
    - the hub's address and web port (8080);
    - its web UI login, if it has one;
    - the Home Assistant URL for the hub, for example `http://192.0.2.5:8123`.
-4. Open the integration's **Configure** and pick whole devices and/or single entities. The review step shows each merged device's entities and commands; untick anything you don't want on the hub.
+4. Open the integration's **Configure** and pick whole devices and/or single entities. The **Review merged devices** step shows each merged device's entities and commands; untick anything you don't want on the hub. It also has the *Link LG HDMI ports to hub devices* checkbox (display only; see [LG theater state and links](#lg-theater-state-and-links)).
 
 ## Merged devices
 
@@ -155,6 +155,7 @@ When the hub reports `ha-state` in `GET /api/version`, Melodious also pushes a l
 - **Cadence:** a state change is pushed straight away in one batch for all devices; changes that follow within 1.2 s are coalesced into the next push (the hub takes one per second). A 30 s heartbeat keeps the state fresh.
 - **Volatile on the hub:** the hub keeps the snapshot in `/var/volatile/codex-ha-state.json` (RAM only, never flash) and marks it stale after 90 s without a push. Unloading or stopping Home Assistant sends no fake `off` snapshot; the Melodious web and Android apps show **State unknown** once the snapshot turns stale.
 - **Older hubs** without `ha-state` in `/api/version` are skipped silently.
+- **Redundant commands are skipped (Phase 4b):** the same fresh state guards the webhook. A discrete `PowerOn` (`turn_on`) for an entity that is already on, a `webos_input` for the HDMI port an LG TV is already showing, and a `select_source`/`select_option` for the source or option already selected make no service call. Toggles, `turn_off` and anything with unknown or unavailable state always run, and `melodious.command_received` still fires for skipped commands, so automations chained to the button are never lost.
 
 ### LG theater state and links
 
