@@ -25,7 +25,7 @@
     "step": {
       "init": {
         "title": "Devices on the hub",
-        "description": "Pick whole devices to merge into one Harmony device each, and/or single entities. The next step reviews each device. Removing one takes it off the hub, unless an activity or button still uses it.",
+        "description": "Pick whole devices to merge into one Harmony device each, and/or single entities. The next step reviews each device. Removing one takes it off the hub, unless an activity or button still uses it. Entities and devices created by Melodious are excluded: they are mirrored from this hub and can't be pushed back to it.",
         "data": {
           "devices": "Devices (merged into one Harmony device each)",
           "entities": "Single entities",
@@ -61,6 +61,7 @@
     },
     "error": {
       "cannot_connect": "Could not read the hub. Try again.",
+      "mirror_loop": "These devices are mirrored from this hub and can't be pushed back to it: {devices}.",
       "unknown_device": "A selected hub device no longer exists. Select it again."
     }
   }
