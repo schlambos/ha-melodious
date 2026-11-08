@@ -61,6 +61,7 @@ class MelodiousRuntime:
         self.store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
         # The set the hub last took, and the commands a webhook call may run.
         self.sent: dict | None = None
+        self._hub_seed: dict | None = None
         self.allowed: dict[str, set[str]] = {}
         self.taken_names: set[str] = set()
         self._lock = asyncio.Lock()
@@ -140,7 +141,8 @@ class MelodiousRuntime:
     def _previous(self) -> dict[str, dict]:
         """The last sent set indexed by key and by entity."""
         previous: dict[str, dict] = {}
-        for device in (self.sent or {}).get("devices", []):
+        source = self.sent or self._hub_seed
+        for device in (source or {}).get("devices", []):
             if device.get("key"):
                 previous[device["key"]] = device
                 for item in device.get("entities", []):
@@ -181,6 +183,11 @@ class MelodiousRuntime:
         async with self._lock:
             try:
                 self.taken_names = await self.client.device_names()
+                if self.sent is None and self._hub_seed is None:
+                    try:
+                        self._hub_seed = {"devices": await self.client.ha_devices()}
+                    except HubError:
+                        self._hub_seed = {"devices": []}
                 groups = self.groups()
                 if groups:
                     try:
