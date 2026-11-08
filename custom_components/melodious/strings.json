@@ -29,6 +29,7 @@
         "data": {
           "devices": "Devices (merged into one Harmony device each)",
           "entities": "Single entities",
+          "edit_mirror_devices": "Mirror hub devices into Home Assistant",
           "edit_theater_links": "Edit LG HDMI device links (display only)"
         }
       },
@@ -36,8 +37,21 @@
         "title": "Review merged devices",
         "description": "Per device: which entities to merge, and which commands to leave off the hub.{warnings}",
         "data": {
+          "edit_mirror_devices": "Mirror hub devices into Home Assistant",
           "edit_theater_links": "Link LG HDMI ports to hub devices (display only)"
         }
+      },
+      "mirror": {
+        "title": "Mirror hub devices",
+        "description": "Pick devices that exist only on the hub. Each becomes a Home Assistant device with one button per command. Devices Melodious already pushed to the hub are never listed. Buttons are tap-only; use remote.send_command with hold_secs to hold a command.",
+        "data": {
+          "mirror_devices": "Hub devices to mirror"
+        }
+      },
+      "mirror_review": {
+        "title": "Choose mirrored commands",
+        "description": "Select commands you don't want as buttons in Home Assistant. Devices: {devices}.",
+        "data": {}
       },
       "theater": {
         "title": "Link LG HDMI gear",

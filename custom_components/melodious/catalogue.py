@@ -20,6 +20,12 @@ class HubDevice:
     name: str
     commands: tuple[str, ...]
     is_ha: bool
+    manufacturer: str | None = None
+    model: str | None = None
+    transport: int | None = None
+    ha_tag: str | None = None
+    # The {d} token an HA-backed device carries (its integration key).
+    key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,11 +48,40 @@ class Catalogue:
             if device.get("Id-") is None or not device.get("Name"):
                 continue
             commands = entry.get("Commands") or []
+            if not isinstance(commands, list):
+                commands = []
+            transport = device.get("Transport")
+            if type(transport) is not int:
+                transport = None
+            ha_tag = str(device.get("haTag") or "") or None
+            auto = device.get("AutoDetectedDevice")
+            auto_id = str(auto.get("Id") or "") if isinstance(auto, dict) else ""
+            tokens = device.get("Tokens")
+            tokens = tokens.get("Parameters") if isinstance(tokens, dict) else []
+            key = next(
+                (str(token.get("Value")) for token in tokens
+                 if isinstance(token, dict) and token.get("Key") == "{d}"
+                 and token.get("Value")),
+                None,
+            )
             devices.append(HubDevice(
                 id=str(device["Id-"]),
                 name=str(device["Name"]),
                 commands=tuple(str(c["Name"]) for c in commands if c.get("Name")),
-                is_ha=any(c.get("TransportType") == HA_TRANSPORT for c in commands),
+                # The hub marks devices the integration pushed with a
+                # melodious-ha-* AutoDetectedDevice id and TransportType 64.
+                # Either marker (or a haTag) means "never mirror this back".
+                is_ha=bool(ha_tag) or transport == HA_TRANSPORT
+                or auto_id.startswith("melodious-ha-")
+                or any(
+                    isinstance(c, dict) and c.get("TransportType") == HA_TRANSPORT
+                    for c in commands
+                ),
+                manufacturer=str(device.get("Manufacturer") or "") or None,
+                model=str(device.get("Model") or "") or None,
+                transport=transport,
+                ha_tag=ha_tag,
+                key=key,
             ))
         activities = []
         for activity in (config.get("activityList") or {}).get("Activities") or []:
@@ -59,6 +94,14 @@ class Catalogue:
 
     def device(self, name_or_id: str) -> HubDevice | None:
         return _resolve(self.devices, name_or_id)
+
+    def device_by_id(self, device_id: str) -> HubDevice | None:
+        text = str(device_id)
+        return next((d for d in self.devices if d.id == text), None)
+
+    def mirror_devices(self) -> tuple[HubDevice, ...]:
+        """Hub-only devices that may be mirrored into Home Assistant."""
+        return tuple(d for d in self.devices if not d.is_ha)
 
     def activity(self, name_or_id: str) -> HubActivity | None:
         return _resolve(self.activities, name_or_id)

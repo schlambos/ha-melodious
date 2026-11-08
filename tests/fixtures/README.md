@@ -1,3 +1,11 @@
+# Hub activity config
+
+`hub_activity_config.json` is a sanitised extract of the owner's 2026-11-07
+hub config: the devices and activities used by the mirror tests, with the
+hub address removed. It keeps the real manufacturer/model strings, command
+names, power features and input features so the tests exercise the same
+shapes the hub sends.
+
 # LG input capture
 
 `lg_external_inputs.json` is the owner's OLED65C4/webOS 24

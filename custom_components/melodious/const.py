@@ -6,6 +6,7 @@ CONF_HA_URL = "ha_url"
 CONF_WEBHOOK_ID = "webhook_id"
 CONF_ENTITIES = "entities"
 CONF_DEVICES = "devices"
+CONF_MIRROR_DEVICES = "mirror_devices"
 CONF_THEATER_LINKS = "theater_links"
 
 DEFAULT_PORT = 8080

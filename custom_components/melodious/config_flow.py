@@ -14,9 +14,20 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from . import hub_client
-from .const import CONF_DEVICES, CONF_ENTITIES, CONF_HA_URL, CONF_THEATER_LINKS, CONF_WEBHOOK_ID, DEFAULT_PORT, DOMAIN
+from .catalogue import Catalogue
+from .const import (
+    CONF_DEVICES,
+    CONF_ENTITIES,
+    CONF_HA_URL,
+    CONF_MIRROR_DEVICES,
+    CONF_THEATER_LINKS,
+    CONF_WEBHOOK_ID,
+    DEFAULT_PORT,
+    DOMAIN,
+)
 from .devices import SUPPORTED_DOMAINS
 from .hub import HubError, HubRefused
+from .mirror import mirror_picker_options
 
 
 class MelodiousConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -84,6 +95,9 @@ class MelodiousOptionsFlow(OptionsFlow):
             self._picked_devices = user_input.get(CONF_DEVICES, [])
             self._picked_entities = user_input.get(CONF_ENTITIES, [])
             self._edit_theater_links = user_input.get("edit_theater_links", False)
+            self._edit_mirror_devices = user_input.get("edit_mirror_devices", False)
+            self._mirror_done = False
+            self._theater_done = False
             if self._picked_devices:
                 return await self.async_step_review()
             return await self._finish({CONF_ENTITIES: self._picked_entities, CONF_DEVICES: []})
@@ -95,6 +109,7 @@ class MelodiousOptionsFlow(OptionsFlow):
                 ): selector.DeviceSelector(
                     selector.DeviceSelectorConfig(multiple=True)
                 ),
+                vol.Optional("edit_mirror_devices", default=False): bool,
                 vol.Optional("edit_theater_links", default=False): bool,
                 vol.Optional(
                     CONF_ENTITIES, default=self.config_entry.options.get(CONF_ENTITIES, [])
@@ -168,11 +183,13 @@ class MelodiousOptionsFlow(OptionsFlow):
                                           (user_input.get(f"disabled_{device_id}") or [])
                                           if c in valid],
                 })
-            # The review's picks ride along until the theater step saves them.
+            # The review's picks ride along until the mirror/theater steps save them.
             self._pending_options = {**self.config_entry.options,
                                      CONF_DEVICES: devices, CONF_ENTITIES: entities_pick}
-            if user_input.get("edit_theater_links"):
-                return await self.async_step_theater()
+            self._edit_mirror_devices = user_input.get("edit_mirror_devices", False)
+            self._edit_theater_links = user_input.get("edit_theater_links", False)
+            self._mirror_done = False
+            self._theater_done = False
             return await self._finish({CONF_DEVICES: devices, CONF_ENTITIES: entities_pick})
 
         schema_dict: dict[Any, Any] = {}
@@ -195,6 +212,7 @@ class MelodiousOptionsFlow(OptionsFlow):
                          if c in command_names],
             )] = selector.SelectSelector(selector.SelectSelectorConfig(
                 options=command_names, multiple=True))
+        schema_dict[vol.Optional("edit_mirror_devices", default=False)] = bool
         schema_dict[vol.Optional("edit_theater_links", default=False)] = bool
         warning_text = "\n".join(warnings)
         return self.async_show_form(
@@ -203,11 +221,143 @@ class MelodiousOptionsFlow(OptionsFlow):
         )
 
     async def _finish(self, options: dict) -> ConfigFlowResult:
-        # Unrelated device configuration must never silently delete links.
-        self._pending_options = {**self.config_entry.options, **options}
-        if getattr(self, "_edit_theater_links", False):
+        # Unrelated device configuration must never silently delete links or
+        # mirrored devices; only the steps the user opened replace them.
+        self._pending_options = {
+            **getattr(self.config_entry, "options", {}),
+            **getattr(self, "_pending_options", {}),
+            **options,
+        }
+        if getattr(self, "_edit_mirror_devices", False) \
+                and not getattr(self, "_mirror_done", False):
+            return await self.async_step_mirror()
+        if getattr(self, "_edit_theater_links", False) \
+                and not getattr(self, "_theater_done", False):
             return await self.async_step_theater()
         return self.async_create_entry(data=self._pending_options)
+
+    async def async_step_mirror(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Pick hub-only devices to mirror into Home Assistant."""
+        runtime = getattr(self.config_entry, "runtime_data", None)
+        if runtime is None:
+            return self.async_show_form(
+                step_id="mirror", data_schema=vol.Schema({}),
+                errors={"base": "cannot_connect"},
+            )
+        if user_input is not None:
+            picked = [str(item) for item in user_input.get(CONF_MIRROR_DEVICES, [])]
+            self._picked_mirror_ids = [
+                item for item in picked if item in getattr(self, "_mirror_device_ids", set())
+            ]
+            if self._picked_mirror_ids:
+                return await self.async_step_mirror_review()
+            self._pending_options = {
+                **getattr(self, "_pending_options", self.config_entry.options),
+                CONF_MIRROR_DEVICES: [],
+            }
+            self._mirror_done = True
+            return await self._finish({})
+        try:
+            config = await runtime.client.activity_config()
+        except HubError:
+            return self.async_show_form(
+                step_id="mirror", data_schema=vol.Schema({}),
+                errors={"base": "cannot_connect"},
+            )
+        catalogue = Catalogue.from_config(config)
+        self._mirror_catalogue = catalogue
+        integration_options = getattr(self, "_pending_options", self.config_entry.options)
+        options = mirror_picker_options(catalogue, integration_options)
+        self._mirror_device_ids = {option["value"] for option in options}
+        if not options:
+            # Nothing on this hub can be mirrored; keep the rest of the flow.
+            self._pending_options = {
+                **getattr(self, "_pending_options", self.config_entry.options),
+                CONF_MIRROR_DEVICES: [],
+            }
+            self._mirror_done = True
+            return await self._finish({})
+        saved = {
+            str(item.get("device_id"))
+            for item in self.config_entry.options.get(CONF_MIRROR_DEVICES, [])
+        }
+        defaults = [option["value"] for option in options if option["value"] in saved]
+        schema = vol.Schema({
+            vol.Optional(CONF_MIRROR_DEVICES, default=defaults): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=options,
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+        })
+        return self.async_show_form(step_id="mirror", data_schema=schema)
+
+    async def async_step_mirror_review(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Per mirrored device: which commands to leave off Home Assistant."""
+        catalogue: Catalogue | None = getattr(self, "_mirror_catalogue", None)
+        if catalogue is None:
+            return await self.async_step_mirror()
+        picked = [
+            device_id for device_id in getattr(self, "_picked_mirror_ids", [])
+            if catalogue.device_by_id(device_id) is not None
+        ]
+        saved = {
+            str(item.get("device_id")): item
+            for item in self.config_entry.options.get(CONF_MIRROR_DEVICES, [])
+        }
+        if user_input is not None:
+            devices = []
+            for device_id in picked:
+                device = catalogue.device_by_id(device_id)
+                if device is None:
+                    continue
+                disabled = [
+                    command for command in user_input.get(f"disabled_{device_id}") or []
+                    if command in device.commands
+                ]
+                devices.append({
+                    "device_id": device.id,
+                    "name": device.name,
+                    "manufacturer": device.manufacturer,
+                    "model": device.model,
+                    "disabled_commands": disabled,
+                })
+            self._pending_options = {
+                **getattr(self, "_pending_options", self.config_entry.options),
+                CONF_MIRROR_DEVICES: devices,
+            }
+            self._mirror_done = True
+            return await self._finish({})
+        schema: dict[Any, Any] = {}
+        for device_id in picked:
+            device = catalogue.device_by_id(device_id)
+            if device is None:
+                continue
+            previous = saved.get(device_id, {})
+            schema[vol.Optional(
+                f"disabled_{device_id}",
+                default=[
+                    command for command in previous.get("disabled_commands") or []
+                    if command in device.commands
+                ],
+            )] = selector.SelectSelector(selector.SelectSelectorConfig(
+                options=list(device.commands),
+                multiple=True,
+                mode=selector.SelectSelectorMode.LIST,
+            ))
+        return self.async_show_form(
+            step_id="mirror_review", data_schema=vol.Schema(schema),
+            description_placeholders={
+                "devices": ", ".join(
+                    catalogue.device_by_id(device_id).name
+                    for device_id in picked
+                    if catalogue.device_by_id(device_id) is not None
+                ),
+            },
+        )
 
     async def async_step_theater(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Explicit display-only HDMI-port to hub-device links; no control writes."""
@@ -228,7 +378,8 @@ class MelodiousOptionsFlow(OptionsFlow):
                     links.append({"entity_id": entity_id, "port_id": port_id,
                                   "hub_device_id": device_id})
             if not errors:
-                return self.async_create_entry(data={**self._pending_options, CONF_THEATER_LINKS: links})
+                self._theater_done = True
+                return await self._finish({CONF_THEATER_LINKS: links})
         try:
             config = await runtime.client.activity_config()
         except HubError:

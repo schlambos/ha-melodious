@@ -1,0 +1,1437 @@
+{
+  "deviceList": {
+    "DevicesWithFeatures": [
+      {
+        "Device": {
+          "Id-": 66690268,
+          "Name": "Google TV",
+          "Manufacturer": "NVIDIA",
+          "Model": "SHIELD TV",
+          "Transport": 32,
+          "haTag": null,
+          "AutoDetectedDevice": null
+        },
+        "DeviceFeatures": [
+          {
+            "__type": "InputFeature",
+            "Inputs": [
+              {
+                "InputName": "Tuner"
+              }
+            ]
+          },
+          {
+            "__type": "PowerFeature",
+            "PowerTypeId": 1,
+            "PowerOnActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "Home",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerOffActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "Sleep",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerToggleActions": null
+          }
+        ],
+        "Commands": [
+          {
+            "Name": "0",
+            "TransportType": 32
+          },
+          {
+            "Name": "1",
+            "TransportType": 32
+          },
+          {
+            "Name": "2",
+            "TransportType": 32
+          },
+          {
+            "Name": "3",
+            "TransportType": 32
+          },
+          {
+            "Name": "4",
+            "TransportType": 32
+          },
+          {
+            "Name": "5",
+            "TransportType": 32
+          },
+          {
+            "Name": "6",
+            "TransportType": 32
+          },
+          {
+            "Name": "7",
+            "TransportType": 32
+          },
+          {
+            "Name": "8",
+            "TransportType": 32
+          },
+          {
+            "Name": "9",
+            "TransportType": 32
+          },
+          {
+            "Name": "Back",
+            "TransportType": 32
+          },
+          {
+            "Name": "ChannelDown",
+            "TransportType": 32
+          },
+          {
+            "Name": "ChannelUp",
+            "TransportType": 32
+          },
+          {
+            "Name": "DirectionDown",
+            "TransportType": 32
+          },
+          {
+            "Name": "DirectionLeft",
+            "TransportType": 32
+          },
+          {
+            "Name": "DirectionRight",
+            "TransportType": 32
+          },
+          {
+            "Name": "DirectionUp",
+            "TransportType": 32
+          },
+          {
+            "Name": "F1",
+            "TransportType": 32
+          },
+          {
+            "Name": "F10",
+            "TransportType": 32
+          },
+          {
+            "Name": "F11",
+            "TransportType": 32
+          },
+          {
+            "Name": "F12",
+            "TransportType": 32
+          },
+          {
+            "Name": "F2",
+            "TransportType": 32
+          },
+          {
+            "Name": "F3",
+            "TransportType": 32
+          },
+          {
+            "Name": "F4",
+            "TransportType": 32
+          },
+          {
+            "Name": "F5",
+            "TransportType": 32
+          },
+          {
+            "Name": "F6",
+            "TransportType": 32
+          },
+          {
+            "Name": "F7",
+            "TransportType": 32
+          },
+          {
+            "Name": "F8",
+            "TransportType": 32
+          },
+          {
+            "Name": "F9",
+            "TransportType": 32
+          },
+          {
+            "Name": "FastForward",
+            "TransportType": 32
+          },
+          {
+            "Name": "Home",
+            "TransportType": 32
+          },
+          {
+            "Name": "Info",
+            "TransportType": 32
+          },
+          {
+            "Name": "Menu",
+            "TransportType": 32
+          },
+          {
+            "Name": "Mute",
+            "TransportType": 32
+          },
+          {
+            "Name": "NextTrack",
+            "TransportType": 32
+          },
+          {
+            "Name": "Pause",
+            "TransportType": 32
+          },
+          {
+            "Name": "Play",
+            "TransportType": 32
+          },
+          {
+            "Name": "PreviousTrack",
+            "TransportType": 32
+          },
+          {
+            "Name": "Rewind",
+            "TransportType": 32
+          },
+          {
+            "Name": "Select",
+            "TransportType": 32
+          },
+          {
+            "Name": "Sleep",
+            "TransportType": 32
+          },
+          {
+            "Name": "Stop",
+            "TransportType": 32
+          },
+          {
+            "Name": "VolumeDown",
+            "TransportType": 32
+          },
+          {
+            "Name": "VolumeUp",
+            "TransportType": 32
+          }
+        ]
+      },
+      {
+        "Device": {
+          "Id-": 74521691,
+          "Name": "LG TV",
+          "Manufacturer": "LG",
+          "Model": "OLED65C8PUA",
+          "Transport": 1,
+          "haTag": null,
+          "AutoDetectedDevice": null
+        },
+        "DeviceFeatures": [
+          {
+            "__type": "InputFeature",
+            "Inputs": [
+              {
+                "InputName": "TV"
+              },
+              {
+                "InputName": "AV"
+              },
+              {
+                "InputName": "Component"
+              },
+              {
+                "InputName": "HDMI 1"
+              },
+              {
+                "InputName": "HDMI 2"
+              },
+              {
+                "InputName": "HDMI 3"
+              },
+              {
+                "InputName": "HDMI 4"
+              },
+              {
+                "InputName": "Smart TV"
+              },
+              {
+                "InputName": "Amazon"
+              },
+              {
+                "InputName": "Netflix"
+              }
+            ]
+          },
+          {
+            "__type": "PowerFeature",
+            "PowerTypeId": 1,
+            "PowerOnActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOn",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerOffActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOff",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerToggleActions": []
+          }
+        ],
+        "Commands": [
+          {
+            "Name": "Amazon",
+            "TransportType": 1
+          },
+          {
+            "Name": "Home",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputAv1",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputComponent1",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi1",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi2",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi3",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi4",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputTv",
+            "TransportType": 1
+          },
+          {
+            "Name": "Netflix",
+            "TransportType": 1
+          },
+          {
+            "Name": "OK",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerOff",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerOn",
+            "TransportType": 1
+          },
+          {
+            "Name": "-",
+            "TransportType": 1
+          },
+          {
+            "Name": ".",
+            "TransportType": 1
+          },
+          {
+            "Name": "0",
+            "TransportType": 1
+          },
+          {
+            "Name": "1",
+            "TransportType": 1
+          },
+          {
+            "Name": "2",
+            "TransportType": 1
+          },
+          {
+            "Name": "3",
+            "TransportType": 1
+          },
+          {
+            "Name": "4",
+            "TransportType": 1
+          },
+          {
+            "Name": "5",
+            "TransportType": 1
+          },
+          {
+            "Name": "6",
+            "TransportType": 1
+          },
+          {
+            "Name": "7",
+            "TransportType": 1
+          },
+          {
+            "Name": "8",
+            "TransportType": 1
+          },
+          {
+            "Name": "9",
+            "TransportType": 1
+          },
+          {
+            "Name": "Back",
+            "TransportType": 1
+          },
+          {
+            "Name": "Blue",
+            "TransportType": 1
+          },
+          {
+            "Name": "ChannelDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "ChannelPrev",
+            "TransportType": 1
+          },
+          {
+            "Name": "ChannelUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionLeft",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionRight",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "Exit",
+            "TransportType": 1
+          },
+          {
+            "Name": "FastForward",
+            "TransportType": 1
+          },
+          {
+            "Name": "Green",
+            "TransportType": 1
+          },
+          {
+            "Name": "Guide",
+            "TransportType": 1
+          },
+          {
+            "Name": "Info",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputNext",
+            "TransportType": 1
+          },
+          {
+            "Name": "In-Start",
+            "TransportType": 1
+          },
+          {
+            "Name": "In-Stop",
+            "TransportType": 1
+          },
+          {
+            "Name": "List",
+            "TransportType": 1
+          },
+          {
+            "Name": "Mute",
+            "TransportType": 1
+          },
+          {
+            "Name": "Pause",
+            "TransportType": 1
+          },
+          {
+            "Name": "PictureMode",
+            "TransportType": 1
+          },
+          {
+            "Name": "Play",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerToggle",
+            "TransportType": 1
+          },
+          {
+            "Name": "Record",
+            "TransportType": 1
+          },
+          {
+            "Name": "Red",
+            "TransportType": 1
+          },
+          {
+            "Name": "Return",
+            "TransportType": 1
+          },
+          {
+            "Name": "Rewind",
+            "TransportType": 1
+          },
+          {
+            "Name": "SAP",
+            "TransportType": 1
+          },
+          {
+            "Name": "ServiceMenu",
+            "TransportType": 1
+          },
+          {
+            "Name": "Settings",
+            "TransportType": 1
+          },
+          {
+            "Name": "Simplink",
+            "TransportType": 1
+          },
+          {
+            "Name": "SoundMode",
+            "TransportType": 1
+          },
+          {
+            "Name": "Stop",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "Yellow",
+            "TransportType": 1
+          },
+          {
+            "Name": "Aspect",
+            "TransportType": 1
+          },
+          {
+            "Name": "SportsMode",
+            "TransportType": 1
+          },
+          {
+            "Name": "SmartMenu",
+            "TransportType": 1
+          },
+          {
+            "Name": "Sleep",
+            "TransportType": 1
+          },
+          {
+            "Name": "Signal",
+            "TransportType": 1
+          }
+        ]
+      },
+      {
+        "Device": {
+          "Id-": 81897247,
+          "Name": "Nakamichi Amp",
+          "Manufacturer": "Nakamichi",
+          "Model": "Shockwafe Pro 7.1",
+          "Transport": 1,
+          "haTag": null,
+          "AutoDetectedDevice": null
+        },
+        "DeviceFeatures": [
+          {
+            "__type": "InputFeature",
+            "Inputs": [
+              {
+                "InputName": "Aux"
+              },
+              {
+                "InputName": "Bluetooth"
+              },
+              {
+                "InputName": "Coaxial"
+              },
+              {
+                "InputName": "HDMI Arc"
+              },
+              {
+                "InputName": "HDMI 2"
+              },
+              {
+                "InputName": "HDMI 3"
+              },
+              {
+                "InputName": "HDMI 4"
+              },
+              {
+                "InputName": "Optical"
+              },
+              {
+                "InputName": "USB"
+              }
+            ]
+          },
+          {
+            "__type": "PowerFeature",
+            "PowerTypeId": 2,
+            "PowerOnActions": [],
+            "PowerOffActions": [],
+            "PowerToggleActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerToggle",
+                "Order": 1,
+                "Duration": 0,
+                "ActionId": 0
+              }
+            ]
+          }
+        ],
+        "Commands": [
+          {
+            "Name": "InputAux",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputBluetooth",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputCoaxial",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi2",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi3",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmi4",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputHdmiArc",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputOptical",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputUsb",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerToggle",
+            "TransportType": 1
+          },
+          {
+            "Name": "AllSurroundDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "AllSurroundUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "BackSurroundDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "BackSurroundUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "BassDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "BassUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "CenterDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "CenterUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "ClearVoice",
+            "TransportType": 1
+          },
+          {
+            "Name": "DialogControlDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "DialogControlUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "Dimmer",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionLeft",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionRight",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "DisplayOff",
+            "TransportType": 1
+          },
+          {
+            "Name": "Enter",
+            "TransportType": 1
+          },
+          {
+            "Name": "Entertainment",
+            "TransportType": 1
+          },
+          {
+            "Name": "Info",
+            "TransportType": 1
+          },
+          {
+            "Name": "Menu",
+            "TransportType": 1
+          },
+          {
+            "Name": "Movie",
+            "TransportType": 1
+          },
+          {
+            "Name": "Music",
+            "TransportType": 1
+          },
+          {
+            "Name": "Mute",
+            "TransportType": 1
+          },
+          {
+            "Name": "NextTrack",
+            "TransportType": 1
+          },
+          {
+            "Name": "Night",
+            "TransportType": 1
+          },
+          {
+            "Name": "Pause",
+            "TransportType": 1
+          },
+          {
+            "Name": "Play",
+            "TransportType": 1
+          },
+          {
+            "Name": "PreviousTrack",
+            "TransportType": 1
+          },
+          {
+            "Name": "PureDirect",
+            "TransportType": 1
+          },
+          {
+            "Name": "Return",
+            "TransportType": 1
+          },
+          {
+            "Name": "RoomSize",
+            "TransportType": 1
+          },
+          {
+            "Name": "Setup",
+            "TransportType": 1
+          },
+          {
+            "Name": "Stereo",
+            "TransportType": 1
+          },
+          {
+            "Name": "Stop",
+            "TransportType": 1
+          },
+          {
+            "Name": "SurroundDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "SurroundUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "SyncDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "SyncUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "SystemMemory1",
+            "TransportType": 1
+          },
+          {
+            "Name": "SystemMemory2",
+            "TransportType": 1
+          },
+          {
+            "Name": "TrebleDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "TrebleUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeUp",
+            "TransportType": 1
+          }
+        ]
+      },
+      {
+        "Device": {
+          "Id-": 91684058,
+          "Name": "HiFi",
+          "Manufacturer": "Sony",
+          "Model": "STR-DG720",
+          "Transport": 1,
+          "haTag": null,
+          "AutoDetectedDevice": null
+        },
+        "DeviceFeatures": [
+          {
+            "__type": "InputFeature",
+            "Inputs": [
+              {
+                "InputName": "Bd"
+              },
+              {
+                "InputName": "Dm Port"
+              },
+              {
+                "InputName": "DVD"
+              },
+              {
+                "InputName": "Sa-Cd/Cd"
+              },
+              {
+                "InputName": "Sat"
+              },
+              {
+                "InputName": "Tuner"
+              },
+              {
+                "InputName": "TV"
+              },
+              {
+                "InputName": "Video 1"
+              },
+              {
+                "InputName": "Video 2"
+              },
+              {
+                "InputName": "Am"
+              },
+              {
+                "InputName": "Fm"
+              }
+            ]
+          },
+          {
+            "__type": "PowerFeature",
+            "PowerTypeId": 1,
+            "PowerOnActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOn",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerOffActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOff",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerToggleActions": []
+          }
+        ],
+        "Commands": [
+          {
+            "Name": "0",
+            "TransportType": 1
+          },
+          {
+            "Name": "1",
+            "TransportType": 1
+          },
+          {
+            "Name": "2",
+            "TransportType": 1
+          },
+          {
+            "Name": "2CH",
+            "TransportType": 1
+          },
+          {
+            "Name": "3",
+            "TransportType": 1
+          },
+          {
+            "Name": "4",
+            "TransportType": 1
+          },
+          {
+            "Name": "5",
+            "TransportType": 1
+          },
+          {
+            "Name": "6",
+            "TransportType": 1
+          },
+          {
+            "Name": "7",
+            "TransportType": 1
+          },
+          {
+            "Name": "8",
+            "TransportType": 1
+          },
+          {
+            "Name": "9",
+            "TransportType": 1
+          },
+          {
+            "Name": "AFD",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionLeft",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionRight",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectionUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "Display",
+            "TransportType": 1
+          },
+          {
+            "Name": "Exit",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputBd",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputDmPort",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputDVD",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputSa-Cd/Cd",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputSat",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputTuner",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputTv",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputVideo1",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputVideo2",
+            "TransportType": 1
+          },
+          {
+            "Name": "Memory",
+            "TransportType": 1
+          },
+          {
+            "Name": "Movie",
+            "TransportType": 1
+          },
+          {
+            "Name": "Music",
+            "TransportType": 1
+          },
+          {
+            "Name": "Mute",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerOff",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerOn",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerToggle",
+            "TransportType": 1
+          },
+          {
+            "Name": "PresetNext",
+            "TransportType": 1
+          },
+          {
+            "Name": "PresetPrev",
+            "TransportType": 1
+          },
+          {
+            "Name": "Return",
+            "TransportType": 1
+          },
+          {
+            "Name": "Select",
+            "TransportType": 1
+          },
+          {
+            "Name": "Sleep",
+            "TransportType": 1
+          },
+          {
+            "Name": "Theater",
+            "TransportType": 1
+          },
+          {
+            "Name": "TuningDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "TuningUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeUp",
+            "TransportType": 1
+          },
+          {
+            "Name": "DirectTune",
+            "TransportType": 1
+          },
+          {
+            "Name": "Menu",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmFastForward",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmPause",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmPlay",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmRewind",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmSkipBack",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmSkipForward",
+            "TransportType": 1
+          },
+          {
+            "Name": "DmStop",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputAm",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputFm",
+            "TransportType": 1
+          }
+        ]
+      },
+      {
+        "Device": {
+          "Id-": 91684059,
+          "Name": "Toping E30",
+          "Manufacturer": "Toping",
+          "Model": "E30",
+          "Transport": 1,
+          "haTag": null,
+          "AutoDetectedDevice": null
+        },
+        "DeviceFeatures": [],
+        "Commands": [
+          {
+            "Name": "InputNext",
+            "TransportType": 1
+          },
+          {
+            "Name": "InputPrevious",
+            "TransportType": 1
+          },
+          {
+            "Name": "PowerToggle",
+            "TransportType": 1
+          },
+          {
+            "Name": "Auto",
+            "TransportType": 1
+          },
+          {
+            "Name": "DIS",
+            "TransportType": 1
+          },
+          {
+            "Name": "FIR",
+            "TransportType": 1
+          },
+          {
+            "Name": "Headphone",
+            "TransportType": 1
+          },
+          {
+            "Name": "Line&Headphone",
+            "TransportType": 1
+          },
+          {
+            "Name": "LineOut",
+            "TransportType": 1
+          },
+          {
+            "Name": "Mute",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeDown",
+            "TransportType": 1
+          },
+          {
+            "Name": "VolumeUp",
+            "TransportType": 1
+          }
+        ]
+      },
+      {
+        "Device": {
+          "Id-": 91684061,
+          "Name": "Living Room 1",
+          "Manufacturer": "Home Assistant",
+          "Model": "Home Assistant entity",
+          "Transport": 64,
+          "haTag": null,
+          "AutoDetectedDevice": {
+            "Id": "melodious-ha-91684061"
+          },
+          "Tokens": {
+            "Parameters": [
+              {
+                "Key": "{d}",
+                "Value": "light.hue_color_lamp_1"
+              }
+            ]
+          }
+        },
+        "DeviceFeatures": [
+          {
+            "__type": "PowerFeature",
+            "PowerTypeId": 1,
+            "PowerOnActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOn",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerOffActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOff",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerToggleActions": []
+          }
+        ],
+        "Commands": [
+          {
+            "Name": "PowerOn",
+            "TransportType": 64
+          },
+          {
+            "Name": "PowerOff",
+            "TransportType": 64
+          },
+          {
+            "Name": "PowerToggle",
+            "TransportType": 64
+          },
+          {
+            "Name": "BrightnessUp",
+            "TransportType": 64
+          },
+          {
+            "Name": "BrightnessDown",
+            "TransportType": 64
+          }
+        ]
+      },
+      {
+        "Device": {
+          "Id-": 91684097,
+          "Name": "Living Room TV",
+          "Manufacturer": "Home Assistant",
+          "Model": "Home Assistant entity",
+          "Transport": 64,
+          "haTag": null,
+          "AutoDetectedDevice": {
+            "Id": "melodious-ha-91684097"
+          },
+          "Tokens": {
+            "Parameters": [
+              {
+                "Key": "{d}",
+                "Value": "media_player.box_r_4k_plus"
+              }
+            ]
+          }
+        },
+        "DeviceFeatures": [
+          {
+            "__type": "PowerFeature",
+            "PowerTypeId": 1,
+            "PowerOnActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOn",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerOffActions": [
+              {
+                "__type": "IRPressAction",
+                "IRCommandName": "PowerOff",
+                "Order": 0,
+                "Duration": null,
+                "ActionId": 0
+              }
+            ],
+            "PowerToggleActions": []
+          }
+        ],
+        "Commands": [
+          {
+            "Name": "PowerOn",
+            "TransportType": 64
+          },
+          {
+            "Name": "PowerOff",
+            "TransportType": 64
+          },
+          {
+            "Name": "VolumeUp",
+            "TransportType": 64
+          },
+          {
+            "Name": "VolumeDown",
+            "TransportType": 64
+          },
+          {
+            "Name": "Mute",
+            "TransportType": 64
+          },
+          {
+            "Name": "Play",
+            "TransportType": 64
+          },
+          {
+            "Name": "Pause",
+            "TransportType": 64
+          },
+          {
+            "Name": "PlayPause",
+            "TransportType": 64
+          },
+          {
+            "Name": "Stop",
+            "TransportType": 64
+          },
+          {
+            "Name": "SkipForward",
+            "TransportType": 64
+          },
+          {
+            "Name": "SkipBack",
+            "TransportType": 64
+          }
+        ]
+      }
+    ]
+  },
+  "activityList": {
+    "Activities": [
+      {
+        "Id-": 1878029666,
+        "Name": "Watch TV",
+        "Roles": [
+          {
+            "DeviceId-": 66690268,
+            "__type": "PlayMovieActivityRole",
+            "SelectedInput": null
+          },
+          {
+            "DeviceId-": 81897247,
+            "__type": "VolumeActivityRole",
+            "SelectedInput": {
+              "Name": "HDMI Arc"
+            }
+          },
+          {
+            "DeviceId-": 74521691,
+            "__type": "DisplayActivityRole",
+            "SelectedInput": {
+              "Name": "HDMI 1"
+            }
+          }
+        ]
+      },
+      {
+        "Id-": 1878029883,
+        "Name": "Music",
+        "Roles": [
+          {
+            "DeviceId-": 91684058,
+            "__type": "VolumeActivityRole",
+            "SelectedInput": {
+              "Name": "DVD"
+            }
+          },
+          {
+            "DeviceId-": 91684059,
+            "__type": "PlayMediaActivityRole",
+            "SelectedInput": null
+          }
+        ]
+      },
+      {
+        "Id-": 1878030106,
+        "Name": "Nintendo Switch",
+        "Roles": [
+          {
+            "DeviceId-": 74521691,
+            "__type": "DisplayActivityRole",
+            "SelectedInput": {
+              "Name": "HDMI 3"
+            }
+          },
+          {
+            "DeviceId-": 81897247,
+            "__type": "VolumeActivityRole",
+            "SelectedInput": {
+              "Name": "HDMI Arc"
+            }
+          }
+        ]
+      },
+      {
+        "Id-": -1,
+        "Name": "PowerOff",
+        "Roles": []
+      }
+    ]
+  }
+}
