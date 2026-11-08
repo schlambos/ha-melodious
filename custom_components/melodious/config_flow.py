@@ -89,11 +89,134 @@ class MelodiousConfigFlow(ConfigFlow, domain=DOMAIN):
 class MelodiousOptionsFlow(OptionsFlow):
     """Pick the entities the hub gets as devices."""
 
+    def _own_entities(self) -> list[str]:
+        """Every entity this config entry created, mirrored or on the hub."""
+        hass = getattr(self, "hass", None)
+        entry_id = getattr(self.config_entry, "entry_id", None)
+        if hass is None or entry_id is None:
+            return []
+        from homeassistant.helpers import entity_registry as er
+        from homeassistant.helpers.entity_registry import async_entries_for_config_entry
+
+        return [
+            entry.entity_id
+            for entry in async_entries_for_config_entry(
+                er.async_get(hass), entry_id
+            )
+        ]
+
+    @staticmethod
+    def _device_ids(devices: list[Any] | None) -> list[str]:
+        """Device IDs from either the picker's strings or the stored groups."""
+        return [
+            str(item.get("device_id") if isinstance(item, dict) else item)
+            for item in devices or []
+        ]
+
+    def _loop_labels(
+        self, devices: list[Any] | None, entities: list[str] | None
+    ) -> list[str]:
+        """Picks that would push this integration's own entities back to the hub.
+
+        A whole device is rejected when every entity on it belongs to this
+        config entry: that is a mirror-only device (or the hub itself). A
+        stored group is also rejected when any selected entity is ours. A real
+        Home Assistant device that also has a mirrored counterpart keeps its
+        own integration's entities and is allowed.
+        """
+        own = set(self._own_entities())
+        if not own:
+            return []
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+        from homeassistant.helpers.entity_registry import async_entries_for_device
+
+        dev_reg = dr.async_get(self.hass)
+        ent_reg = er.async_get(self.hass)
+        labels: list[str] = []
+        for item in devices or []:
+            if isinstance(item, dict):
+                device_id = str(item.get("device_id", ""))
+                # A stored group with no entities means every entity on it.
+                selected = [str(entity) for entity in item.get("entities") or []]
+            else:
+                # The init picker only knows the device; the review step
+                # narrows the entities and is validated when it saves.
+                device_id = str(item)
+                selected = None
+            entries = async_entries_for_device(
+                ent_reg, device_id, include_disabled_entities=True
+            )
+            registry_ids = [entry.entity_id for entry in entries]
+            mirror_only = bool(registry_ids) and all(
+                entity_id in own for entity_id in registry_ids
+            )
+            bad = mirror_only or (
+                selected is not None
+                and any(entity_id in own for entity_id in selected or registry_ids)
+            )
+            if bad:
+                device = dev_reg.async_get(device_id)
+                name = (device.name_by_user or device.name) if device else None
+                labels.append(name or device_id)
+        labels.extend(str(entity) for entity in entities or [] if str(entity) in own)
+        return list(dict.fromkeys(labels))
+
+    def _init_schema(self, defaults: dict[str, Any] | None = None) -> vol.Schema:
+        defaults = defaults or {}
+        saved_devices = [
+            d.get("device_id") for d in self.config_entry.options.get(CONF_DEVICES, [])
+        ]
+        return vol.Schema(
+            {
+                vol.Optional(
+                    CONF_DEVICES,
+                    default=defaults.get(CONF_DEVICES, saved_devices),
+                ): selector.DeviceSelector(
+                    selector.DeviceSelectorConfig(multiple=True)
+                ),
+                vol.Optional(
+                    "edit_mirror_devices",
+                    default=defaults.get("edit_mirror_devices", False),
+                ): bool,
+                vol.Optional(
+                    "edit_theater_links",
+                    default=defaults.get("edit_theater_links", False),
+                ): bool,
+                vol.Optional(
+                    CONF_ENTITIES,
+                    default=defaults.get(
+                        CONF_ENTITIES,
+                        self.config_entry.options.get(CONF_ENTITIES, []),
+                    ),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain=list(SUPPORTED_DOMAINS),
+                        multiple=True,
+                        # Mirrored buttons, switches, selects, sensors and the
+                        # hub's own remote/activity entities must never be
+                        # pushed back to the hub as devices.
+                        exclude_entities=self._own_entities(),
+                    )
+                ),
+            }
+        )
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
+            picked_devices = user_input.get(CONF_DEVICES) or []
+            picked_entities = user_input.get(CONF_ENTITIES) or []
+            bad = self._loop_labels(picked_devices, picked_entities)
+            if bad:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self._init_schema(user_input),
+                    errors={"base": "mirror_loop"},
+                    description_placeholders={"devices": ", ".join(bad)},
+                )
             # Remember the device pick; the review step expands it.
-            self._picked_devices = user_input.get(CONF_DEVICES, [])
-            self._picked_entities = user_input.get(CONF_ENTITIES, [])
+            self._picked_devices = picked_devices
+            self._picked_entities = picked_entities
             self._edit_theater_links = user_input.get("edit_theater_links", False)
             self._edit_mirror_devices = user_input.get("edit_mirror_devices", False)
             self._mirror_done = False
@@ -101,24 +224,7 @@ class MelodiousOptionsFlow(OptionsFlow):
             if self._picked_devices:
                 return await self.async_step_review()
             return await self._finish({CONF_ENTITIES: self._picked_entities, CONF_DEVICES: []})
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_DEVICES,
-                    default=[d.get("device_id") for d in self.config_entry.options.get(CONF_DEVICES, [])],
-                ): selector.DeviceSelector(
-                    selector.DeviceSelectorConfig(multiple=True)
-                ),
-                vol.Optional("edit_mirror_devices", default=False): bool,
-                vol.Optional("edit_theater_links", default=False): bool,
-                vol.Optional(
-                    CONF_ENTITIES, default=self.config_entry.options.get(CONF_ENTITIES, [])
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=list(SUPPORTED_DOMAINS), multiple=True)
-                ),
-            }
-        )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=self._init_schema())
 
     async def async_step_review(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Per device: which entities to merge and which commands to skip."""
@@ -164,6 +270,7 @@ class MelodiousOptionsFlow(OptionsFlow):
                 members,
             )
 
+        bad: list[str] = []
         if user_input is not None:
             devices = []
             for device_id in picked:
@@ -183,20 +290,29 @@ class MelodiousOptionsFlow(OptionsFlow):
                                           (user_input.get(f"disabled_{device_id}") or [])
                                           if c in valid],
                 })
-            # The review's picks ride along until the mirror/theater steps save them.
-            self._pending_options = {**self.config_entry.options,
-                                     CONF_DEVICES: devices, CONF_ENTITIES: entities_pick}
-            self._edit_mirror_devices = user_input.get("edit_mirror_devices", False)
-            self._edit_theater_links = user_input.get("edit_theater_links", False)
-            self._mirror_done = False
-            self._theater_done = False
-            return await self._finish({CONF_DEVICES: devices, CONF_ENTITIES: entities_pick})
+            bad = self._loop_labels(
+                [device["device_id"] for device in devices], entities_pick
+            )
+            if not bad:
+                # The review's picks ride along until the mirror/theater steps save them.
+                self._pending_options = {**self.config_entry.options,
+                                         CONF_DEVICES: devices, CONF_ENTITIES: entities_pick}
+                self._edit_mirror_devices = user_input.get("edit_mirror_devices", False)
+                self._edit_theater_links = user_input.get("edit_theater_links", False)
+                self._mirror_done = False
+                self._theater_done = False
+                return await self._finish({CONF_DEVICES: devices, CONF_ENTITIES: entities_pick})
 
         schema_dict: dict[Any, Any] = {}
         warnings: list[str] = []
         for device_id in picked:
             group = _group(device_id)
             prev = saved.get(device_id, {})
+            if user_input is not None:
+                prev = {
+                    "entities": user_input.get(f"entities_{device_id}"),
+                    "disabled_commands": user_input.get(f"disabled_{device_id}"),
+                }
             reg_ids = [e.entity_id for e in group.entities]
             schema_dict[vol.Optional(
                 f"entities_{device_id}",
@@ -212,12 +328,22 @@ class MelodiousOptionsFlow(OptionsFlow):
                          if c in command_names],
             )] = selector.SelectSelector(selector.SelectSelectorConfig(
                 options=command_names, multiple=True))
-        schema_dict[vol.Optional("edit_mirror_devices", default=False)] = bool
-        schema_dict[vol.Optional("edit_theater_links", default=False)] = bool
+        schema_dict[vol.Optional(
+            "edit_mirror_devices",
+            default=(user_input or {}).get("edit_mirror_devices", False),
+        )] = bool
+        schema_dict[vol.Optional(
+            "edit_theater_links",
+            default=(user_input or {}).get("edit_theater_links", False),
+        )] = bool
         warning_text = "\n".join(warnings)
         return self.async_show_form(
             step_id="review", data_schema=vol.Schema(schema_dict),
-            description_placeholders={"warnings": f"\n\n{warning_text}" if warning_text else ""},
+            errors={"base": "mirror_loop"} if bad else None,
+            description_placeholders={
+                "warnings": f"\n\n{warning_text}" if warning_text else "",
+                "devices": ", ".join(bad),
+            },
         )
 
     async def _finish(self, options: dict) -> ConfigFlowResult:
@@ -228,6 +354,25 @@ class MelodiousOptionsFlow(OptionsFlow):
             **getattr(self, "_pending_options", {}),
             **options,
         }
+        # The pickers hide these, but a direct options write or a future UI
+        # change must not be able to push this integration's own entities back
+        # to the hub and create a command loop.
+        bad = self._loop_labels(
+            self._pending_options.get(CONF_DEVICES),
+            self._pending_options.get(CONF_ENTITIES),
+        )
+        if bad:
+            return self.async_show_form(
+                step_id="init",
+                data_schema=self._init_schema({
+                    **self._pending_options,
+                    CONF_DEVICES: self._device_ids(
+                        self._pending_options.get(CONF_DEVICES)
+                    ),
+                }),
+                errors={"base": "mirror_loop"},
+                description_placeholders={"devices": ", ".join(bad)},
+            )
         if getattr(self, "_edit_mirror_devices", False) \
                 and not getattr(self, "_mirror_done", False):
             return await self.async_step_mirror()
