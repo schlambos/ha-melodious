@@ -1,0 +1,9 @@
+{
+  "returnValue": true,
+  "devices": [
+    {"id": "HDMI_1", "label": "Living Room TV", "port": 1, "connected": true, "hdmiPlugIn": true, "hdmiSignalExist": true, "appId": "com.webos.app.hdmi1", "spdProductDescription": "MBox Meson Ref", "spdVendorName": "Amlogic", "spdSourceDeviceInfo": "Digital STB", "subList": [{"id": "SIMPLINK", "vendorId": 1877008, "osdName": "Living Room TV", "cecpDevType": 8, "cecpNewType": 9}]},
+    {"id": "HDMI_2", "label": "Nakamichi Sound Bar", "port": 2, "connected": true, "hdmiPlugIn": true, "hdmiSignalExist": false, "appId": "com.webos.app.hdmi2", "subList": [{"id": "SIMPLINK", "vendorId": 9681, "osdName": "NAKAMICHI", "cecpDevType": 5, "cecpNewType": 9}, {"id": "URCU", "serviceType": "audio", "connectedInput": "ARC", "brandName": "Nakamichi", "codeset": "R0347", "hasPowerKey": true}]},
+    {"id": "HDMI_3", "label": "Switch2 Game Console", "port": 3, "connected": false, "hdmiPlugIn": true, "hdmiSignalExist": false, "appId": "com.webos.app.hdmi3", "subList": [{"id": "URCU", "serviceType": "game", "connectedInput": "HDMI_3", "brandName": "Switch2", "codeset": "", "hasPowerKey": false}]},
+    {"id": "HDMI_4", "label": "HDMI 4", "port": 4, "connected": false, "hdmiPlugIn": false, "hdmiSignalExist": false, "appId": "com.webos.app.hdmi4", "subList": []}
+  ]
+}

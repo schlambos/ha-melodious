@@ -7,6 +7,7 @@ its file here. Run from the repo root:
 """
 
 import importlib.util
+import json
 import re
 import unittest
 from pathlib import Path
@@ -16,6 +17,11 @@ SPEC = importlib.util.spec_from_file_location("melodious_devices", ROOT / "custo
 devices = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(devices)
 Entity = devices.Entity
+WEBOS_SPEC = importlib.util.spec_from_file_location("melodious_webos", ROOT / "custom_components/melodious/webos.py")
+webos = importlib.util.module_from_spec(WEBOS_SPEC)
+WEBOS_SPEC.loader.exec_module(webos)
+LG_INPUTS = json.loads((ROOT / "tests/fixtures/lg_external_inputs.json").read_text())
+LG_PORTS = webos.parse_inputs(LG_INPUTS)
 
 WEBHOOK = "http://ha.example:8123/api/webhook/abc"
 TV_FEATURES = (
@@ -59,6 +65,7 @@ def lg_tv(**attributes):
         {"source_list": LG_SOURCES, "sound_output": "external_arc",
          "volume_level": 0.12, "is_volume_muted": False, **attributes},
         platform="webostv",
+        webos_inputs=LG_PORTS,
     )
 
 
@@ -437,6 +444,49 @@ class MergedSetTests(unittest.TestCase):
 
 
 class LGWebOSTests(unittest.TestCase):
+    def test_cec_rename_keeps_port_keys_commands_and_stable_actions(self):
+        first, _ = merged_spec([lg_tv(source_list=["Living Room TV", "Netflix"])])
+        renamed = lg_tv(source_list=["Renamed box", "Netflix"])
+        renamed.webos_inputs = [dict(p, label="Renamed box", cec_name="Renamed box")
+                                if p["id"] == "HDMI_1" else p for p in LG_PORTS]
+        second, _ = merged_spec([renamed], previous={first["key"]: first})
+        self.assertEqual(first["inputs"], second["inputs"])
+        self.assertEqual(first["key"], second["key"])
+        self.assertEqual(first["commands"], second["commands"])
+        values = {c["name"]: c["value"] for c in second["commands"]}
+        self.assertNotIn("App Renamed box", values)
+        self.assertTrue(values["Input HDMI 1"].endswith(":webos_input:HDMI_1"))
+
+    def test_old_hdmi_and_misclassified_app_values_migrate_without_renaming(self):
+        alias = "eabd21a1b"
+        old = {"key": LG_ENTITY, "entities": [{"alias": alias, "entity": LG_ENTITY}],
+               "commands": [{"name": "Input HDMI 1", "value": f"{alias}:select_source:HDMI 1"},
+                            {"name": "App Living Room TV", "value": f"{alias}:select_source:Living Room TV"}],
+               "inputs": [{"name": "HDMI 1", "command": "Input HDMI 1"}]}
+        spec, _ = merged_spec([lg_tv()], previous={LG_ENTITY: old})
+        for name in ("Input HDMI 1", "App Living Room TV"):
+            command = next(c for c in spec["commands"] if c["name"] == name)
+            self.assertEqual(command["value"], f"{alias}:webos_input:HDMI_1")
+
+    def test_off_at_start_keeps_previous_ports_without_guessing_new_ones(self):
+        first, _ = merged_spec([lg_tv()])
+        off = lg_tv(source_list=["A CEC name that is not an app"])
+        off.webos_inputs = None
+        off.state = "off"
+        second, _ = merged_spec([off], previous={first["key"]: first})
+        self.assertEqual(first, second)
+        empty, _ = merged_spec([off])
+        self.assertNotIn("inputs", empty)
+        self.assertFalse(any(c["name"].startswith("App ") for c in empty["commands"]))
+
+    def test_port_service_action_is_platform_scoped_and_validated(self):
+        expected = ("webostv", "command", {"entity_id": LG_ENTITY, "command": "tv/switchInput",
+                                           "payload": {"inputId": "HDMI_1"}})
+        self.assertEqual(devices.service_call(LG_ENTITY, "webos_input:HDMI_1", platform="webostv"), expected)
+        for action in ("webos_input:", "webos_input:HDMI_1:evil", "webos_input:netflix"):
+            self.assertIsNone(devices.service_call(LG_ENTITY, action, platform="webostv"))
+        self.assertIsNone(devices.service_call(LG_ENTITY, "webos_input:HDMI_1", platform="cast"))
+
     def test_command_table_from_the_owners_features(self):
         spec, suppressed = merged_spec([lg_tv()], name="LG webOS TV OLED65C4PUA",
                                        device_id="lg")
@@ -473,23 +523,23 @@ class LGWebOSTests(unittest.TestCase):
     def test_input_app_split_for_the_37_entry_source_list(self):
         spec, _ = merged_spec([lg_tv()], name="LG webOS TV OLED65C4PUA", device_id="lg")
         alias = spec["entities"][0]["alias"]
-        self.assertEqual([i["name"] for i in spec["inputs"]], ["HDMI 1", "HDMI 4", "Live TV"])
+        self.assertEqual([i["name"] for i in spec["inputs"]], ["HDMI 1", "HDMI 2", "HDMI 3", "HDMI 4"])
         values = {c["name"]: c["value"] for c in spec["commands"]}
-        self.assertEqual(values["Input HDMI 1"], f"{alias}:select_source:HDMI 1")
-        self.assertEqual(values["Input HDMI 4"], f"{alias}:select_source:HDMI 4")
-        self.assertEqual(values["Input Live TV"], f"{alias}:select_source:Live TV")
+        self.assertEqual(values["Input HDMI 1"], f"{alias}:webos_input:HDMI_1")
+        self.assertEqual(values["Input HDMI 4"], f"{alias}:webos_input:HDMI_4")
+        self.assertEqual(values["App Live TV"], f"{alias}:select_source:Live TV")
         self.assertNotIn("Input Netflix", values)
         self.assertEqual(values["App Netflix"], f"{alias}:select_source:Netflix")
         apps = [c["name"] for c in spec["commands"] if c["name"].startswith("App ")]
-        self.assertEqual(len(apps), 34)
+        self.assertEqual(len(apps), 33)
         self.assertEqual(len(spec["inputs"]) + len(apps), 37)
 
     def test_input_app_split_for_the_dumps_35_entries(self):
         spec, _ = merged_spec([lg_tv(source_list=LG_DUMP_SOURCES)],
                               name="LG webOS TV OLED65C4PUA", device_id="lg")
-        self.assertEqual([i["name"] for i in spec["inputs"]], ["HDMI 1", "HDMI 4", "Live TV"])
+        self.assertEqual([i["name"] for i in spec["inputs"]], ["HDMI 1", "HDMI 2", "HDMI 3", "HDMI 4"])
         self.assertEqual(
-            len([c for c in spec["commands"] if c["name"].startswith("App ")]), 32)
+            len([c for c in spec["commands"] if c["name"].startswith("App ")]), 31)
 
     def test_command_order_for_the_touch_hard_keys(self):
         spec, _ = merged_spec([lg_tv()], name="LG webOS TV OLED65C4PUA", device_id="lg")
@@ -564,13 +614,13 @@ class LGWebOSTests(unittest.TestCase):
                               name="LG webOS TV OLED65C4PUA", device_id="lg",
                               warnings=warnings)
         self.assertEqual(len(spec["commands"]), 128)
-        self.assertEqual(len(spec["inputs"]), 3)
+        self.assertEqual(len(spec["inputs"]), 4)
         self.assertEqual(
-            sum(1 for c in spec["commands"] if c["name"].startswith("App ")), 85)
+            sum(1 for c in spec["commands"] if c["name"].startswith("App ")), 84)
         self.assertEqual(len(warnings), 1)
-        self.assertIn("243 commands", warnings[0])
+        self.assertIn("245 commands", warnings[0])
         self.assertIn("kept 128", warnings[0])
-        self.assertIn("115 app commands", warnings[0])
+        self.assertIn("117 app commands", warnings[0])
         names = [c["name"] for c in spec["commands"]]
         for name in ("PowerOff", "PowerToggle", "VolumeUp", "DirectionUp",
                      "Select", "Menu", "Home", "Input HDMI 1"):
@@ -769,15 +819,42 @@ class HubSeedTests(unittest.TestCase):
 
 
 class StateSnapshotTests(unittest.TestCase):
+    def test_lg_off_and_unavailable_never_reuse_theater_state(self):
+        ent = lg_tv(source="Living Room TV")
+        ent.webos_theater = {"active_input": {"id": "HDMI_1", "label": "Living Room TV"},
+                             "ports": LG_PORTS, "sound": {"volume": 14, "muted": False}}
+        for state in ("off", "standby", "unknown", "unavailable"):
+            ent.state = state
+            snap = devices.device_state_snapshot(LG_ENTITY, [ent], 1, 2)
+            for key in ("theater", "source", "activity", "volume", "muted"):
+                self.assertIsNone(snap[key], (state, key))
+
+    def test_links_are_explicit_metadata_not_new_devices_or_power(self):
+        ent = lg_tv()
+        ent.state = "off"
+        groups = [group("lg", "LG", [ent])]
+        sent, _ = devices.build_merged_set(WEBHOOK, groups, {}, {}, {})
+        links = [{"entity_id": LG_ENTITY, "port_id": "HDMI_2", "hub_device_id": "123"},
+                 {"entity_id": "media_player.other", "port_id": "HDMI_2", "hub_device_id": "456"},
+                 {"entity_id": LG_ENTITY, "port_id": "unsafe", "hub_device_id": "123"}]
+        payload = devices.build_state_payload(groups, [], sent, 1, 2, links)
+        self.assertEqual(len(payload["states"]), 1)
+        snapshot = payload["states"][0]
+        self.assertEqual(snapshot["theater_links"], [{"port": "HDMI_2", "device_id": "123"}])
+        self.assertEqual(snapshot["power"], "off")
+        self.assertIsNone(snapshot["theater"])
+
     def test_lg_webos_input_vs_app_and_volume(self):
         ent = lg_tv(source="HDMI 1", volume_level=0.35, is_volume_muted=False)
         ent.state = "on"
+        ent.webos_theater = {"active_input": {"id": "HDMI_1", "label": "Living Room TV"},
+                             "ports": LG_PORTS, "sound": {"volume": 35, "muted": False}}
         snap = devices.device_state_snapshot(LG_ENTITY, [ent], seq=7, updated=1762500000)
         self.assertEqual(snap, {
             "key": LG_ENTITY,
             "available": True,
             "power": "on",
-            "source": "HDMI 1",
+            "source": "Living Room TV",
             "volume": 0.35,
             "muted": False,
             "playing": "idle",
@@ -785,10 +862,13 @@ class StateSnapshotTests(unittest.TestCase):
             "seq": 7,
             "updated": 1762500000,
             "entities": {LG_ENTITY: "on"},
+            "theater": ent.webos_theater,
         })
 
         app_ent = lg_tv(source="Netflix", volume_level=0.2, is_volume_muted=True)
         app_ent.state = "playing"
+        app_ent.webos_theater = {"active_input": None, "ports": LG_PORTS,
+                                 "foreground_app": "netflix", "sound": {"volume": 20, "muted": True}}
         app_snap = devices.device_state_snapshot(
             LG_ENTITY, [app_ent], seq=8, updated=1762500005, aliases={LG_ENTITY: "e12345678"}
         )
@@ -855,6 +935,8 @@ class StateSnapshotTests(unittest.TestCase):
     def test_build_state_payload_batches_merged_and_v1_sets(self):
         lg = lg_tv(source="HDMI 4")
         lg.state = "on"
+        lg.webos_theater = {"active_input": {"id": "HDMI_4", "label": "HDMI 4"},
+                           "ports": LG_PORTS, "sound": None}
         gt_mp, gt_rem = google_tv()
         gt_mp.state = "off"
         gt_rem.state = "off"
@@ -877,7 +959,7 @@ class StableAliasTests(unittest.TestCase):
         long_app = "Weekend Games - Song Quiz, Jeopardy! and CoComelon"
         def lg(sources):
             entity = Entity("media_player.lg_webos_tv_oled65c4pua_2", "LG", True, 24509,
-                            {"source_list": sources}, platform="webostv")
+                            {"source_list": sources}, platform="webostv", webos_inputs=LG_PORTS)
             return devices.DeviceGroup("lg", "LG TV", "LG", "OLED", [entity])
         on = devices.merge_device(lg(["HDMI 1", long_app]), key="media_player.lg_webos_tv_oled65c4pua_2")
         alias = on["entities"][0]["alias"]

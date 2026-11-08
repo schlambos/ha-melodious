@@ -30,6 +30,7 @@ from .const import (
     CONF_DEVICES,
     CONF_ENTITIES,
     CONF_HA_URL,
+    CONF_THEATER_LINKS,
     CONF_WEBHOOK_ID,
     DOMAIN,
     PUSH_DELAY_SECONDS,
@@ -48,6 +49,7 @@ from .devices import (
     service_call,
 )
 from .hub import HubClient, HubError, HubRefused
+from .webos import POLL_SECONDS, WebOSObservations
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,6 +90,37 @@ class MelodiousRuntime:
         self._last_state_push = 0.0
         self._ha_state_supported: bool | None = None
         self._ha_state_skip_logged = False
+        self.webos = WebOSObservations(self._read_webos, self._webos_is_on)
+
+    def _webos_is_on(self, entity_id: str) -> bool:
+        state = self.hass.states.get(entity_id)
+        return state is not None and state.state in ("on", "idle", "playing", "paused", "buffering")
+
+    async def _read_webos(self, entity_id: str, uri: str) -> dict:
+        return await self.hass.services.async_call(
+            "webostv", "command", {"entity_id": entity_id, "command": uri},
+            blocking=True, return_response=True,
+        )
+
+    def _with_webos(self, entity: Entity) -> Entity:
+        if entity.platform == "webostv":
+            entity.webos_inputs = self.webos.ports.get(entity.entity_id)
+            entity.webos_theater = self.webos.theater(entity.entity_id)
+        return entity
+
+    async def async_refresh_webos(self) -> None:
+        selected = self.entities() + [m for g in self.groups() for m in g.entities]
+        await self.webos.refresh([e.entity_id for e in selected
+                                  if e.platform == "webostv" and e.domain == "media_player"])
+        self.schedule_state_push(immediate=True)
+        if self._timer is None and self.sent is not None and self._build() != self.sent:
+            self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
+
+    @callback
+    def _webos_poll_fired(self, _now: Any) -> None:
+        self.entry.async_create_background_task(
+            self.hass, self.async_refresh_webos(), f"{DOMAIN} webOS observations",
+        )
 
     @property
     def webhook_url(self) -> str:
@@ -125,7 +158,7 @@ class MelodiousRuntime:
                     state=state.state,
                 )
             )
-        return out
+        return [self._with_webos(e) for e in out]
 
     def groups(self) -> list[DeviceGroup]:
         """The selected HA devices expanded through the entity registry."""
@@ -160,7 +193,8 @@ class MelodiousRuntime:
                     platform=reg_entry.platform,
                     state=state.state if state else STATE_UNAVAILABLE,
                 ))
-            groups.append(DeviceGroup(device_id, name or device_id, manufacturer, model, members))
+            groups.append(DeviceGroup(device_id, name or device_id, manufacturer, model,
+                                      [self._with_webos(e) for e in members]))
         return groups
 
     def _previous(self) -> dict[str, dict]:
@@ -330,7 +364,8 @@ class MelodiousRuntime:
                 return
             self._state_seq += 1
             payload = build_state_payload(
-                self.groups(), self.entities(), self.sent, self._state_seq, int(time.time())
+                self.groups(), self.entities(), self.sent, self._state_seq, int(time.time()),
+                self.entry.options.get(CONF_THEATER_LINKS),
             )
             self._last_state_push = time.monotonic()
             try:
@@ -341,6 +376,12 @@ class MelodiousRuntime:
     @callback
     def async_state_changed(self, _event: Event[EventStateChangedData]) -> None:
         """Push the device set only when it would change; push state straight away."""
+        entity_id = _event.data.get("entity_id")
+        if entity_id in self.webos.ports or entity_id in self.webos.live:
+            self.webos.invalidate(entity_id)
+            # HA's source/state event refreshes observations immediately; the
+            # interval also catches changes not represented in HA attributes.
+            self._webos_poll_fired(None)
         self.schedule_state_push(immediate=True)
         if self._timer is None and self.sent is not None and self._build() != self.sent:
             self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
@@ -396,7 +437,14 @@ class MelodiousRuntime:
                 "value": value,
             },
         )
-        self.hass.async_create_task(self.hass.services.async_call(domain, service, data, blocking=False))
+        async def execute_service() -> None:
+            is_input = action.startswith("webos_input:")
+            await self.hass.services.async_call(domain, service, data, blocking=is_input)
+            if is_input:
+                self.webos.invalidate(entity_id)
+                await self.async_refresh_webos()
+
+        self.entry.async_create_background_task(self.hass, execute_service(), f"{DOMAIN} command")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) -> bool:
@@ -433,9 +481,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
             hass, runtime._heartbeat_fired, timedelta(seconds=STATE_HEARTBEAT_SECONDS)
         )
     )
+    entry.async_on_unload(async_track_time_interval(
+        hass, runtime._webos_poll_fired, timedelta(seconds=POLL_SECONDS),
+    ))
 
     async def push_when_started(_hass: HomeAssistant) -> None:
         # Once per start: the hub may have been reset since the last push.
+        await runtime.async_refresh_webos()
         await runtime.async_push(force=True)
         runtime.schedule_state_push(immediate=True)
 

@@ -14,7 +14,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from . import hub_client
-from .const import CONF_DEVICES, CONF_ENTITIES, CONF_HA_URL, CONF_WEBHOOK_ID, DEFAULT_PORT, DOMAIN
+from .const import CONF_DEVICES, CONF_ENTITIES, CONF_HA_URL, CONF_THEATER_LINKS, CONF_WEBHOOK_ID, DEFAULT_PORT, DOMAIN
 from .devices import SUPPORTED_DOMAINS
 from .hub import HubError, HubRefused
 
@@ -83,9 +83,10 @@ class MelodiousOptionsFlow(OptionsFlow):
             # Remember the device pick; the review step expands it.
             self._picked_devices = user_input.get(CONF_DEVICES, [])
             self._picked_entities = user_input.get(CONF_ENTITIES, [])
+            self._edit_theater_links = user_input.get("edit_theater_links", False)
             if self._picked_devices:
                 return await self.async_step_review()
-            return self.async_create_entry(data=user_input)
+            return await self._finish({CONF_ENTITIES: self._picked_entities, CONF_DEVICES: []})
         schema = vol.Schema(
             {
                 vol.Optional(
@@ -94,6 +95,7 @@ class MelodiousOptionsFlow(OptionsFlow):
                 ): selector.DeviceSelector(
                     selector.DeviceSelectorConfig(multiple=True)
                 ),
+                vol.Optional("edit_theater_links", default=False): bool,
                 vol.Optional(
                     CONF_ENTITIES, default=self.config_entry.options.get(CONF_ENTITIES, [])
                 ): selector.EntitySelector(
@@ -127,7 +129,8 @@ class MelodiousOptionsFlow(OptionsFlow):
                 if entity_ids is not None and reg_entry.entity_id not in entity_ids:
                     continue
                 state = self.hass.states.get(reg_entry.entity_id)
-                members.append(Entity(
+                _runtime = getattr(self.config_entry, "runtime_data", None)
+                members.append((_runtime._with_webos if _runtime else (lambda e: e))(Entity(
                     reg_entry.entity_id,
                     state.name if state else reg_entry.entity_id,
                     available=False if state is None else True,
@@ -136,7 +139,8 @@ class MelodiousOptionsFlow(OptionsFlow):
                     attributes=dict(state.attributes) if state else {},
                     device_id=device_id,
                     platform=reg_entry.platform,
-                ))
+                    state=state.state if state else "unavailable",
+                )))
             return DeviceGroup(
                 device_id,
                 (device.name_by_user or device.name) if device else device_id,
@@ -164,7 +168,7 @@ class MelodiousOptionsFlow(OptionsFlow):
                                           (user_input.get(f"disabled_{device_id}") or [])
                                           if c in valid],
                 })
-            return self.async_create_entry(data={
+            return await self._finish({
                 CONF_DEVICES: devices,
                 CONF_ENTITIES: entities_pick,
             })
@@ -194,3 +198,71 @@ class MelodiousOptionsFlow(OptionsFlow):
             step_id="review", data_schema=vol.Schema(schema_dict),
             description_placeholders={"warnings": f"\n\n{warning_text}" if warning_text else ""},
         )
+
+    async def _finish(self, options: dict) -> ConfigFlowResult:
+        # Unrelated device configuration must never silently delete links.
+        self._pending_options = {**self.config_entry.options, **options}
+        if getattr(self, "_edit_theater_links", False):
+            return await self.async_step_theater()
+        return self.async_create_entry(data=self._pending_options)
+
+    async def async_step_theater(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Explicit display-only HDMI-port to hub-device links; no control writes."""
+        import re
+        from homeassistant.helpers import entity_registry as er
+
+        runtime = getattr(self.config_entry, "runtime_data", None)
+        if runtime is None:
+            return self.async_show_form(step_id="theater", data_schema=vol.Schema({}), errors={"base": "cannot_connect"})
+        errors = {}
+        if user_input is not None and hasattr(self, "_link_fields"):
+            links = []
+            for field, (entity_id, port_id) in self._link_fields.items():
+                for device_id in user_input.get(field) or []:
+                    if device_id not in self._link_device_ids:
+                        errors["base"] = "unknown_device"
+                        continue
+                    links.append({"entity_id": entity_id, "port_id": port_id,
+                                  "hub_device_id": device_id})
+            if not errors:
+                return self.async_create_entry(data={**self._pending_options, CONF_THEATER_LINKS: links})
+        try:
+            config = await runtime.client.activity_config()
+        except HubError:
+            return self.async_show_form(step_id="theater", data_schema=vol.Schema({}),
+                                        errors={"base": "cannot_connect"})
+        entries = (config.get("deviceList") or {}).get("DevicesWithFeatures") or []
+        devices = [{"value": str(item["Device"]["Id-"]), "label": str(item["Device"]["Name"])}
+                   for item in entries if item.get("Device", {}).get("Id-") is not None]
+        self._link_device_ids = {d["value"] for d in devices}
+        self._link_fields = {}
+        schema = {}
+        selected = self._pending_options
+        wanted = set(selected.get(CONF_ENTITIES) or [])
+        for group in selected.get(CONF_DEVICES) or []:
+            wanted.update(group.get("entities") or [])
+        saved = selected.get(CONF_THEATER_LINKS) or []
+        registry = er.async_get(self.hass)
+        lg_entities = [eid for eid in wanted if (reg := registry.async_get(eid))
+                       and reg.platform == "webostv" and eid.startswith("media_player.")]
+        await runtime.webos.refresh(lg_entities)
+        # The last hub spec supplies stable ports when the TV is off. Live
+        # observations supply friendly labels, never a guessed new port list.
+        for entity_id in sorted(lg_entities):
+            spec = next((spec for spec in (runtime.sent or {}).get("devices", [])
+                         if entity_id == spec.get("entity") or any(
+                             e.get("entity") == entity_id for e in spec.get("entities") or [])), {})
+            ports = {p["id"]: p["label"] for p in runtime.webos.ports.get(entity_id, [])}
+            for command in spec.get("commands") or []:
+                match = re.fullmatch(r"Input HDMI ([1-9]\d?)", command.get("name", ""))
+                if match:
+                    ports.setdefault(f"HDMI_{match[1]}", f"HDMI {match[1]}")
+            for port_id, label in sorted(ports.items()):
+                field = f"{entity_id} · {port_id.replace('_', ' ')} · {label}"
+                self._link_fields[field] = (entity_id, port_id)
+                defaults = [str(link["hub_device_id"]) for link in saved
+                            if link.get("entity_id") == entity_id and link.get("port_id") == port_id
+                            and str(link.get("hub_device_id")) in self._link_device_ids]
+                schema[vol.Optional(field, default=defaults)] = selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=devices, multiple=True))
+        return self.async_show_form(step_id="theater", data_schema=vol.Schema(schema), errors=errors)
