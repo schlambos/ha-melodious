@@ -57,7 +57,13 @@ from .webos import POLL_SECONDS, WebOSObservations
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.REMOTE, Platform.BUTTON]
+PLATFORMS = [
+    Platform.REMOTE,
+    Platform.BUTTON,
+    Platform.SWITCH,
+    Platform.SELECT,
+    Platform.SENSOR,
+]
 
 type MelodiousConfigEntry = ConfigEntry[MelodiousRuntime]
 

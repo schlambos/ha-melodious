@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .catalogue import Catalogue, HubDevice
+from .catalogue import (
+    POWER_OFF,
+    Catalogue,
+    HubActivity,
+    HubDevice,
+    resolve_command,
+)
 from .const import CONF_DEVICES, CONF_ENTITIES
 
 
@@ -92,3 +98,107 @@ def mirror_button_specs(
         for command in enabled_commands(device, item.get("disabled_commands")):
             specs.append(MirrorButtonSpec(device, command))
     return specs
+
+
+def mirrored_devices(
+    catalogue: Catalogue,
+    mirror_options: list[dict] | None,
+    pushed_keys: set[str] | None = None,
+) -> list[HubDevice]:
+    """The stored picks that still exist and may be mirrored.
+
+    The same rules as the buttons: a device removed from the hub, marked as
+    Home Assistant-backed, or pushed by this integration is dropped.
+    """
+    devices: list[HubDevice] = []
+    for item in mirror_options or []:
+        device = catalogue.device_by_id(str(item.get("device_id", "")))
+        if device is None or device.is_ha or is_pushed_device(device, pushed_keys):
+            continue
+        devices.append(device)
+    return devices
+
+
+def mirror_power_devices(
+    catalogue: Catalogue,
+    mirror_options: list[dict] | None,
+    pushed_keys: set[str] | None = None,
+) -> list[HubDevice]:
+    """Mirrored devices with a power feature (a switch)."""
+    return [
+        device for device in mirrored_devices(catalogue, mirror_options, pushed_keys)
+        if device.power_type is not None
+    ]
+
+
+def mirror_input_devices(
+    catalogue: Catalogue,
+    mirror_options: list[dict] | None,
+    pushed_keys: set[str] | None = None,
+) -> list[HubDevice]:
+    """Mirrored devices with at least one input (a source select)."""
+    return [
+        device for device in mirrored_devices(catalogue, mirror_options, pushed_keys)
+        if device.inputs
+    ]
+
+
+def running_activity(catalogue: Catalogue, activity_id: str | None) -> HubActivity | None:
+    """The activity the hub is running, or None for PowerOff/unknown."""
+    if activity_id in (None, "", "-1"):
+        return None
+    return catalogue.activity(str(activity_id))
+
+
+def device_in_activity(activity: HubActivity | None, device_id: str) -> bool:
+    return activity is not None and str(device_id) in activity.device_ids
+
+
+def device_power_on(
+    catalogue: Catalogue, activity_id: str | None, device_id: str
+) -> bool:
+    """Optimistic power: on exactly when the device is in the running activity."""
+    return device_in_activity(running_activity(catalogue, activity_id), device_id)
+
+
+def device_activity_name(
+    catalogue: Catalogue, activity_id: str | None, device_id: str
+) -> str:
+    """The running activity this device is part of, or "Idle"."""
+    activity = running_activity(catalogue, activity_id)
+    return activity.name if device_in_activity(activity, device_id) else "Idle"
+
+
+def device_activity_role(
+    catalogue: Catalogue, activity_id: str | None, device_id: str
+) -> str | None:
+    """The device's role in the running activity it belongs to, or None."""
+    activity = running_activity(catalogue, activity_id)
+    if not device_in_activity(activity, device_id):
+        return None
+    return activity.role_for(device_id)
+
+
+def activity_members(catalogue: Catalogue, activity: HubActivity | None) -> dict[str, str]:
+    """Device name -> role for an activity, for the hub activity sensor."""
+    if activity is None:
+        return {}
+    members: dict[str, str] = {}
+    for role, device_id in activity.roles:
+        device = catalogue.device_by_id(device_id)
+        members[device.name if device is not None else device_id] = role
+    return members
+
+
+def input_command(device: HubDevice, input_name: str) -> str | None:
+    """The device's command for an input, in the hub's own spelling.
+
+    Input names lose their spaces (``HDMI Arc`` -> ``InputHDMIArc``) and the
+    match is case-insensitive because the hub spells it ``InputHdmiArc``.
+    """
+    return resolve_command(device, "Input" + str(input_name).replace(" ", ""))
+
+
+def activity_options(catalogue: Catalogue) -> list[str]:
+    """Activity names plus PowerOff, for the hub device's activity select."""
+    return [activity.name for activity in catalogue.activities] + [POWER_OFF]

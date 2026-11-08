@@ -15,7 +15,9 @@ from .hub import HubClient, HubError
 
 _LOGGER = logging.getLogger(__name__)
 
-POLL = timedelta(seconds=30)
+# The state-version check is one cheap request; only an activity change pays
+# for the full activity-config + activity-state read.
+POLL = timedelta(seconds=5)
 # One failed poll keeps the last answer, so a blip doesn't flap the entities.
 GRACE_FAILURES = 1
 
@@ -31,6 +33,8 @@ class MelodiousCoordinator(DataUpdateCoordinator[tuple[Catalogue, str | None]]):
         )
         self.client = client
         self._failures = 0
+        # The last stateVersion the hub reported; None forces a full read.
+        self._state_version: str | None = None
 
     @property
     def catalogue(self) -> Catalogue:
@@ -42,6 +46,14 @@ class MelodiousCoordinator(DataUpdateCoordinator[tuple[Catalogue, str | None]]):
 
     async def _async_update_data(self) -> tuple[Catalogue, str | None]:
         try:
+            if self.data is not None and self._state_version is not None:
+                changed, next_version = await self.client.state_version(self._state_version)
+                if not changed:
+                    self._failures = 0
+                    return self.data
+            else:
+                # No version yet: omit the query parameter for a full read.
+                _, next_version = await self.client.state_version(None)
             config = await self.client.activity_config()
             state = await self.client.activity_state()
         except HubError as err:
@@ -50,4 +62,7 @@ class MelodiousCoordinator(DataUpdateCoordinator[tuple[Catalogue, str | None]]):
                 return self.data
             raise UpdateFailed(str(err)) from err
         self._failures = 0
+        # Only advance after the full read succeeded, so a failed fetch is
+        # retried instead of being hidden behind an "unchanged" answer.
+        self._state_version = next_version
         return Catalogue.from_config(config), current_activity_id(state)

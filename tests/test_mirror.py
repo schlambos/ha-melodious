@@ -143,5 +143,207 @@ class MirrorButtonTests(unittest.TestCase):
         self.assertIsNone(mirror.mirror_device_config(None, NAKAMICHI))
 
 
+class PowerFeatureTests(unittest.TestCase):
+    def setUp(self):
+        self.cat = catalogue.Catalogue.from_config(CONFIG)
+
+    def test_discrete_power_uses_separate_on_and_off_commands(self):
+        for device_id, on, off in (
+            ("74521691", "PowerOn", "PowerOff"),
+            (HIFI, "PowerOn", "PowerOff"),
+            # The Google TV's power buttons are Home and Sleep.
+            ("66690268", "Home", "Sleep"),
+        ):
+            device = self.cat.device_by_id(device_id)
+            self.assertEqual(device.power_type, 1)
+            self.assertEqual(device.power_on_command, on)
+            self.assertEqual(device.power_off_command, off)
+
+    def test_toggle_power_uses_the_same_command_for_both_directions(self):
+        amp = self.cat.device_by_id(NAKAMICHI)
+        self.assertEqual(amp.power_type, 2)
+        self.assertEqual(amp.power_on_command, "PowerToggle")
+        self.assertEqual(amp.power_off_command, "PowerToggle")
+
+    def test_a_device_without_a_power_feature_has_no_switch_commands(self):
+        toping = self.cat.device_by_id(TOPING)
+        self.assertIsNone(toping.power_type)
+        self.assertIsNone(toping.power_on_command)
+        self.assertIsNone(toping.power_off_command)
+
+    def test_an_unknown_power_type_is_not_a_power_feature(self):
+        config = {"deviceList": {"DevicesWithFeatures": [{
+            "Device": {"Id-": 1, "Name": "Odd"},
+            "DeviceFeatures": [{"__type": "PowerFeature", "PowerTypeId": 9}],
+            "Commands": [],
+        }]}}
+        device = catalogue.Catalogue.from_config(config).device_by_id("1")
+        self.assertIsNone(device.power_type)
+        self.assertIsNone(device.power_on_command)
+
+
+class InputFeatureTests(unittest.TestCase):
+    def setUp(self):
+        self.cat = catalogue.Catalogue.from_config(CONFIG)
+
+    def test_inputs_keep_the_hubs_order_and_names(self):
+        amp = self.cat.device_by_id(NAKAMICHI)
+        self.assertEqual(amp.inputs, (
+            "Aux", "Bluetooth", "Coaxial", "HDMI Arc", "HDMI 2",
+            "HDMI 3", "HDMI 4", "Optical", "USB",
+        ))
+        self.assertEqual(self.cat.device_by_id("66690268").inputs, ("Tuner",))
+
+    def test_a_device_without_an_input_feature_has_none(self):
+        self.assertIsNone(self.cat.device_by_id(TOPING).inputs)
+
+    def test_null_input_entries_are_dropped(self):
+        config = {"deviceList": {"DevicesWithFeatures": [{
+            "Device": {"Id-": 1, "Name": "Inputs"},
+            "DeviceFeatures": [{"__type": "InputFeature", "Inputs": [
+                {"InputName": "Aux"}, {"InputName": None}, {}, {"InputName": ""},
+            ]}],
+            "Commands": [],
+        }]}}
+        device = catalogue.Catalogue.from_config(config).device_by_id("1")
+        self.assertEqual(device.inputs, ("Aux",))
+
+    def test_an_empty_input_feature_is_none(self):
+        config = {"deviceList": {"DevicesWithFeatures": [{
+            "Device": {"Id-": 1, "Name": "Empty"},
+            "DeviceFeatures": [{"__type": "InputFeature", "Inputs": []}],
+            "Commands": [],
+        }]}}
+        device = catalogue.Catalogue.from_config(config).device_by_id("1")
+        self.assertIsNone(device.inputs)
+
+
+class ActivityRoleTests(unittest.TestCase):
+    def setUp(self):
+        self.cat = catalogue.Catalogue.from_config(CONFIG)
+
+    def test_member_devices_and_role_types(self):
+        watch_tv = self.cat.activity("Watch TV")
+        self.assertEqual(watch_tv.device_ids, ("66690268", NAKAMICHI, "74521691"))
+        self.assertEqual(watch_tv.roles, (
+            ("PlayMovieActivityRole", "66690268"),
+            ("VolumeActivityRole", NAKAMICHI),
+            ("DisplayActivityRole", "74521691"),
+        ))
+        self.assertEqual(watch_tv.role_for(NAKAMICHI), "VolumeActivityRole")
+        self.assertIsNone(watch_tv.role_for(HIFI))
+
+    def test_poweroff_is_not_an_activity_and_has_no_roles(self):
+        self.assertIsNone(self.cat.activity("-1"))
+        self.assertEqual([a.name for a in self.cat.activities],
+                         ["Watch TV", "Music", "Nintendo Switch"])
+
+
+class PowerDerivationTests(unittest.TestCase):
+    def setUp(self):
+        self.cat = catalogue.Catalogue.from_config(CONFIG)
+        self.watch_tv = "1878029666"
+
+    def test_a_member_of_the_running_activity_is_on(self):
+        self.assertTrue(mirror.device_power_on(self.cat, self.watch_tv, NAKAMICHI))
+        self.assertTrue(mirror.device_power_on(self.cat, self.watch_tv, "74521691"))
+        self.assertTrue(mirror.device_power_on(self.cat, self.watch_tv, "66690268"))
+
+    def test_a_device_outside_the_running_activity_is_off(self):
+        self.assertFalse(mirror.device_power_on(self.cat, self.watch_tv, HIFI))
+        self.assertFalse(mirror.device_power_on(self.cat, self.watch_tv, TOPING))
+
+    def test_poweroff_and_no_activity_mean_off(self):
+        for activity_id in ("-1", None, "", "999"):
+            self.assertFalse(
+                mirror.device_power_on(self.cat, activity_id, NAKAMICHI)
+            )
+
+    def test_activity_name_and_role_are_idle_outside_the_activity(self):
+        self.assertEqual(
+            mirror.device_activity_name(self.cat, self.watch_tv, NAKAMICHI),
+            "Watch TV",
+        )
+        self.assertEqual(
+            mirror.device_activity_role(self.cat, self.watch_tv, NAKAMICHI),
+            "VolumeActivityRole",
+        )
+        self.assertEqual(
+            mirror.device_activity_name(self.cat, self.watch_tv, HIFI), "Idle"
+        )
+        self.assertIsNone(
+            mirror.device_activity_role(self.cat, self.watch_tv, HIFI)
+        )
+        self.assertEqual(
+            mirror.device_activity_name(self.cat, "-1", NAKAMICHI), "Idle"
+        )
+
+    def test_activity_members_map_names_to_roles(self):
+        self.assertEqual(
+            mirror.activity_members(self.cat, self.cat.activity("Watch TV")),
+            {
+                "Google TV": "PlayMovieActivityRole",
+                "Nakamichi Amp": "VolumeActivityRole",
+                "LG TV": "DisplayActivityRole",
+            },
+        )
+        self.assertEqual(mirror.activity_members(self.cat, None), {})
+
+    def test_only_devices_with_a_power_feature_get_a_switch(self):
+        options = [{"device_id": device_id, "disabled_commands": []} for device_id in (
+            "66690268", "74521691", NAKAMICHI, HIFI, TOPING,
+        )]
+        devices = mirror.mirror_power_devices(self.cat, options)
+        self.assertEqual(
+            [device.name for device in devices],
+            ["Google TV", "LG TV", "Nakamichi Amp", "HiFi"],
+        )
+
+    def test_only_devices_with_inputs_get_a_select(self):
+        options = [{"device_id": device_id, "disabled_commands": []} for device_id in (
+            "66690268", "74521691", NAKAMICHI, HIFI, TOPING,
+        )]
+        devices = mirror.mirror_input_devices(self.cat, options)
+        self.assertEqual(
+            [device.name for device in devices],
+            ["Google TV", "LG TV", "Nakamichi Amp", "HiFi"],
+        )
+
+    def test_ha_and_missing_devices_are_not_mirrored(self):
+        options = [
+            {"device_id": HA_LIGHT, "disabled_commands": []},
+            {"device_id": "99999999", "disabled_commands": []},
+        ]
+        self.assertEqual(mirror.mirror_power_devices(self.cat, options), [])
+        self.assertEqual(mirror.mirror_input_devices(self.cat, options), [])
+        self.assertEqual(mirror.mirrored_devices(self.cat, options), [])
+
+
+class InputCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.cat = catalogue.Catalogue.from_config(CONFIG)
+
+    def test_input_names_map_to_the_hubs_command_spelling(self):
+        amp = self.cat.device_by_id(NAKAMICHI)
+        self.assertEqual(mirror.input_command(amp, "HDMI Arc"), "InputHdmiArc")
+        self.assertEqual(mirror.input_command(amp, "HDMI 2"), "InputHdmi2")
+        self.assertEqual(mirror.input_command(amp, "Aux"), "InputAux")
+        self.assertEqual(mirror.input_command(amp, "USB"), "InputUsb")
+
+    def test_an_input_without_a_command_is_unknown(self):
+        self.assertIsNone(
+            mirror.input_command(self.cat.device_by_id("66690268"), "Tuner")
+        )
+        self.assertIsNone(
+            mirror.input_command(self.cat.device_by_id(NAKAMICHI), "Not An Input")
+        )
+
+    def test_activity_options_end_with_poweroff(self):
+        self.assertEqual(
+            mirror.activity_options(self.cat),
+            ["Watch TV", "Music", "Nintendo Switch", "PowerOff"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

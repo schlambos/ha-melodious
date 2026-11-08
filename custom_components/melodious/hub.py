@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
+from .catalogue import extract_state_version
 from .devices import hub_ha_devices
 
 
@@ -84,6 +86,20 @@ class HubClient:
         """The hub's current HA device specs, for seeding _previous on first run."""
         config = await self._request("GET", "/api/activity-config")
         return hub_ha_devices(config)
+
+    async def state_version(self, version: str | None = None) -> tuple[bool, str | None]:
+        """GET /api/state?version=<last>: (changed, stateVersion).
+
+        Omitting the version forces a full read. The hub answers HTTP 200
+        either way; ``changed`` and the inner ``code`` carry the 304.
+        """
+        path = "/api/state"
+        if version not in (None, ""):
+            path += "?version=" + quote(str(version), safe="")
+        body = await self._request("GET", path)
+        if not body.get("changed"):
+            return False, version
+        return True, extract_state_version(body.get("reply")) or version
 
     async def activity_config(self) -> dict:
         return await self._request("GET", "/api/activity-config", timeout=30)
