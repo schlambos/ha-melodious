@@ -144,3 +144,25 @@ class OptionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(saved["data"]["theater_links"]), 2)
         self.assertEqual(cleared["data"]["theater_links"], [])
         runtime.client.assert_not_called()
+
+    async def test_review_step_can_open_theater_links_and_keeps_picks(self):
+        flow = MelodiousOptionsFlow()
+        flow._picked_devices = ["dev1"]
+        flow._picked_entities = ["light.lamp"]
+        flow.hass = SimpleNamespace(states=Mock(get=lambda _: SimpleNamespace(
+            name="TV", state="on", attributes={"supported_features": 128})))
+        device = SimpleNamespace(name_by_user="TV", name="TV", manufacturer=None, model=None)
+        entry = SimpleNamespace(entity_id=ENTITY, platform="webostv")
+        with patch.object(MelodiousOptionsFlow, "config_entry", new_callable=lambda: property(
+            lambda _: SimpleNamespace(options={"theater_links": []}, runtime_data=None))), \
+                patch("homeassistant.helpers.device_registry.async_get", return_value=SimpleNamespace(
+                    async_get=lambda _: device)), \
+                patch("homeassistant.helpers.entity_registry.async_get", return_value=Mock()), \
+                patch("homeassistant.helpers.entity_registry.async_entries_for_device", return_value=[entry]), \
+                patch.object(flow, "async_step_theater", AsyncMock(return_value={"step_id": "theater"})) as theater:
+            result = await flow.async_step_review({"entities_dev1": [ENTITY], "disabled_dev1": [],
+                                                   "edit_theater_links": True})
+        theater.assert_awaited_once()
+        self.assertEqual(result, {"step_id": "theater"})
+        self.assertEqual(flow._pending_options["entities"], ["light.lamp"])
+        self.assertEqual(flow._pending_options["devices"][0]["device_id"], "dev1")
