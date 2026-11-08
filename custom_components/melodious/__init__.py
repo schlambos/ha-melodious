@@ -331,8 +331,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
     entry.async_on_unload(lambda: webhook.async_unregister(hass, entry.data[CONF_WEBHOOK_ID]))
     entry.async_on_unload(runtime._cancel_timer)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    tracked = set(entry.options.get(CONF_ENTITIES, []))
+    for group in runtime.groups():
+        tracked.update(member.entity_id for member in group.entities)
     entry.async_on_unload(
-        async_track_state_change_event(hass, entry.options.get(CONF_ENTITIES, []), runtime.async_state_changed)
+        async_track_state_change_event(hass, sorted(tracked), runtime.async_state_changed)
     )
 
     async def push_when_started(_hass: HomeAssistant) -> None:
