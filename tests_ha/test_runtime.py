@@ -82,6 +82,55 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed, [True])
         self.assertEqual(self.hass.bus.async_fire.call_args.args[1]["command"], "Input HDMI 1")
 
+    def _allow(self, value, name="PowerOn"):
+        self.runtime.sent = {"devices": [{"key": ENTITY, "name": "LG", "entities": [
+            {"alias": ENTITY, "entity": ENTITY}], "commands": [{"name": name, "value": value}]}]}
+        self.runtime.allowed = {ENTITY: {value}}
+
+    async def test_turn_on_skipped_when_already_on_but_event_still_fires(self):
+        self._allow(f"{ENTITY}:turn_on")
+        self.runtime.run(ENTITY, f"{ENTITY}:turn_on")
+        await asyncio.gather(*self.tasks)
+        self.hass.services.async_call.assert_not_awaited()
+        self.assertEqual(self.hass.bus.async_fire.call_args.args[0], "melodious.command_received")
+        self.assertEqual(self.hass.bus.async_fire.call_args.args[1]["command"], "PowerOn")
+
+    async def test_turn_on_runs_when_off_or_unavailable(self):
+        self._allow(f"{ENTITY}:turn_on")
+        for state in ("off", "unavailable", "unknown"):
+            self.hass.states.get.return_value.state = state
+            self.hass.services.async_call.reset_mock()
+            self.runtime.run(ENTITY, f"{ENTITY}:turn_on")
+            await asyncio.gather(*self.tasks)
+            self.tasks.clear()
+            self.hass.services.async_call.assert_awaited_once_with(
+                "media_player", "turn_on", {"entity_id": ENTITY}, blocking=False)
+
+    async def test_power_toggle_never_skips(self):
+        self._allow(f"{ENTITY}:button:POWER", "PowerToggle")
+        self.runtime.run(ENTITY, f"{ENTITY}:button:POWER")
+        await asyncio.gather(*self.tasks)
+        self.hass.services.async_call.assert_awaited_once_with(
+            "webostv", "button", {"entity_id": ENTITY, "button": "POWER"}, blocking=False)
+
+    async def test_webos_input_skipped_when_fresh_theater_is_on_that_port(self):
+        value = f"{ENTITY}:webos_input:HDMI_1"
+        self._allow(value, "Input HDMI 1")
+        self.runtime.webos.theater = lambda eid: {"active_input": {"id": "HDMI_1"}}
+        self.runtime.run(ENTITY, value)
+        await asyncio.gather(*self.tasks)
+        self.hass.services.async_call.assert_not_awaited()
+        self.assertEqual(self.hass.bus.async_fire.call_args.args[1]["command"], "Input HDMI 1")
+        # A different port, or no fresh observation, still switches.
+        for theater in ({"active_input": {"id": "HDMI_2"}}, None):
+            self.hass.services.async_call.reset_mock()
+            self.runtime.webos.theater = lambda eid, t=theater: t
+            self.runtime.async_refresh_webos = AsyncMock()
+            self.runtime.run(ENTITY, value)
+            await asyncio.gather(*self.tasks)
+            self.tasks.clear()
+            self.hass.services.async_call.assert_awaited_once()
+
     async def test_refused_set_is_not_sent_again_until_it_changes(self):
         # A refusal is the hub's answer to that exact set; every re-send cost
         # the hub a flash backup and stalled its engine (remote presses timed out).
