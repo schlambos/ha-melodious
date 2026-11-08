@@ -9,7 +9,7 @@
           "port": "Hub web port",
           "username": "Hub username (if the web UI has a password)",
           "password": "Hub password",
-          "ha_url": "Home Assistant URL for the hub (http://…)"
+          "ha_url": "Home Assistant URL for the hub (http://\u2026)"
         }
       }
     },
@@ -35,7 +35,9 @@
       "review": {
         "title": "Review merged devices",
         "description": "Per device: which entities to merge, and which commands to leave off the hub.{warnings}",
-        "data": {}
+        "data": {
+          "edit_theater_links": "Link LG HDMI ports to hub devices (display only)"
+        }
       },
       "theater": {
         "title": "Link LG HDMI gear",

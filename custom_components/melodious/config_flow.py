@@ -168,10 +168,12 @@ class MelodiousOptionsFlow(OptionsFlow):
                                           (user_input.get(f"disabled_{device_id}") or [])
                                           if c in valid],
                 })
-            return await self._finish({
-                CONF_DEVICES: devices,
-                CONF_ENTITIES: entities_pick,
-            })
+            # The review's picks ride along until the theater step saves them.
+            self._pending_options = {**self.config_entry.options,
+                                     CONF_DEVICES: devices, CONF_ENTITIES: entities_pick}
+            if user_input.get("edit_theater_links"):
+                return await self.async_step_theater()
+            return await self._finish({CONF_DEVICES: devices, CONF_ENTITIES: entities_pick})
 
         schema_dict: dict[Any, Any] = {}
         warnings: list[str] = []
@@ -193,6 +195,7 @@ class MelodiousOptionsFlow(OptionsFlow):
                          if c in command_names],
             )] = selector.SelectSelector(selector.SelectSelectorConfig(
                 options=command_names, multiple=True))
+        schema_dict[vol.Optional("edit_theater_links", default=False)] = bool
         warning_text = "\n".join(warnings)
         return self.async_show_form(
             step_id="review", data_schema=vol.Schema(schema_dict),
