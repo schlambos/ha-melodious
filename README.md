@@ -147,6 +147,16 @@ actions:
       entity_id: light.movie_lights
 ```
 
+## Mirrored hub devices
+
+Devices that exist only on the hub can be mirrored into Home Assistant as real devices. In **Configure**, tick **Mirror hub devices into Home Assistant**, pick the hub devices, and select any commands you don't want. Each enabled command becomes a tap-only `button` entity; the device shows the hub's manufacturer and model, and its identity is tied to the hub's stable numeric device ID, so renaming it on the hub keeps the Home Assistant entities.
+
+- **Opt-in per device.** Nothing is mirrored automatically.
+- **No loops.** Devices Melodious already pushed to the hub (the Home Assistant devices in the same Configure flow) are never listed, and a stored mirrored device that later becomes Home Assistant-backed is ignored.
+- **Tap only.** A `button` press sends one command. To hold a command (for example a volume ramp), use `remote.send_command` on the hub's remote entity with `hold_secs`; the button's attributes say the same.
+- **Full vocabulary.** Every command the device has on the hub is offered. Disabling a command in Configure removes its button on the next reload.
+- **Power and inputs** are not part of this step yet; this release mirrors the command buttons and the device identity.
+
 ## Live device state
 
 When the hub reports `ha-state` in `GET /api/version`, Melodious also pushes a live state snapshot (`POST /api/ha-state`) for every exposed Home Assistant device:

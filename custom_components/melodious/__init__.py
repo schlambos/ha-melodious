@@ -39,6 +39,7 @@ from .const import (
     STATE_DEBOUNCE_SECONDS,
     STATE_HEARTBEAT_SECONDS,
 )
+from .coordinator import MelodiousCoordinator
 from .devices import (
     DeviceGroup,
     Entity,
@@ -50,12 +51,13 @@ from .devices import (
     service_call,
     skip_reason,
 )
+from .entity import hub_device_info
 from .hub import HubClient, HubError, HubRefused
 from .webos import POLL_SECONDS, WebOSObservations
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.REMOTE]
+PLATFORMS = [Platform.REMOTE, Platform.BUTTON]
 
 type MelodiousConfigEntry = ConfigEntry[MelodiousRuntime]
 
@@ -95,6 +97,7 @@ class MelodiousRuntime:
         self._last_state_push = 0.0
         self._ha_state_supported: bool | None = None
         self._ha_state_skip_logged = False
+        self.coordinator: MelodiousCoordinator | None = None
         self.webos = WebOSObservations(self._read_webos, self._webos_is_on)
 
     def _webos_is_on(self, entity_id: str) -> bool:
@@ -479,9 +482,25 @@ class MelodiousRuntime:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) -> bool:
+    from homeassistant.helpers import device_registry as dr
+
     runtime = MelodiousRuntime(hass, entry)
     await runtime.async_load()
+    coordinator = MelodiousCoordinator(hass, entry, runtime.client)
+    runtime.coordinator = coordinator
     entry.runtime_data = runtime
+    # Create the hub device before the platforms so mirrored devices can point
+    # at it with via_device regardless of platform setup order.
+    info = hub_device_info(entry)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers=info["identifiers"],
+        manufacturer=info.get("manufacturer"),
+        model=info.get("model"),
+        name=info.get("name"),
+        configuration_url=info.get("configuration_url"),
+    )
+    await coordinator.async_refresh()
 
     async def handle_webhook(hass: HomeAssistant, webhook_id: str, request: web.Request) -> web.Response:
         try:

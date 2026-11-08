@@ -13,7 +13,6 @@ import logging
 import uuid
 from collections.abc import Iterable
 from contextlib import suppress
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.remote import (
@@ -27,51 +26,26 @@ from homeassistant.components.remote import (
     RemoteEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .catalogue import POWER_OFF, Catalogue, current_activity_id, engine_error, resolve_command
-from .const import DOMAIN
+from .catalogue import POWER_OFF, Catalogue, engine_error, resolve_command
+from .coordinator import MelodiousCoordinator
+from .entity import hub_device_info
 from .hub import HubClient, HubError
 
 _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
-POLL = timedelta(seconds=30)
-# One failed poll keeps the last answer, so a blip doesn't flap the entity.
-GRACE_FAILURES = 1
 HOLD_REFRESH_SECONDS = 0.2
 ATTR_LAST_ACTIVITY = "last_activity"
 
 
-class MelodiousCoordinator(DataUpdateCoordinator[tuple[Catalogue, str | None]]):
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, client: HubClient) -> None:
-        super().__init__(hass, _LOGGER, config_entry=entry, name=f"{DOMAIN} {entry.title}", update_interval=POLL)
-        self.client = client
-        self._failures = 0
-
-    async def _async_update_data(self) -> tuple[Catalogue, str | None]:
-        try:
-            config = await self.client.activity_config()
-            state = await self.client.activity_state()
-        except HubError as err:
-            self._failures += 1
-            if self.data is not None and self._failures <= GRACE_FAILURES:
-                return self.data
-            raise UpdateFailed(str(err)) from err
-        self._failures = 0
-        return Catalogue.from_config(config), current_activity_id(state)
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    coordinator = MelodiousCoordinator(hass, entry, entry.runtime_data.client)
-    await coordinator.async_refresh()
-    async_add_entities([MelodiousRemote(coordinator, entry)])
+    async_add_entities([MelodiousRemote(entry.runtime_data.coordinator, entry)])
 
 
 class MelodiousRemote(CoordinatorEntity[MelodiousCoordinator], RemoteEntity, RestoreEntity):
@@ -81,24 +55,17 @@ class MelodiousRemote(CoordinatorEntity[MelodiousCoordinator], RemoteEntity, Res
 
     def __init__(self, coordinator: MelodiousCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        key = entry.unique_id or entry.entry_id
-        self._attr_unique_id = f"{key}_remote"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, key)},
-            manufacturer="Melodious",
-            model="Harmony Hub",
-            name=entry.title,
-            configuration_url=f"http://{entry.data[CONF_HOST]}:{entry.data[CONF_PORT]}",
-        )
+        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_remote"
+        self._attr_device_info = hub_device_info(entry)
         self._last_activity: str | None = None
 
     @property
     def _catalogue(self) -> Catalogue:
-        return self.coordinator.data[0] if self.coordinator.data else Catalogue((), ())
+        return self.coordinator.catalogue
 
     @property
     def _activity_id(self) -> str | None:
-        return self.coordinator.data[1] if self.coordinator.data else None
+        return self.coordinator.activity_id
 
     @property
     def available(self) -> bool:
