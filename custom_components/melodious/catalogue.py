@@ -8,10 +8,13 @@ exact name, then numeric ID. A case-insensitive name match is a last resort.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 POWER_OFF = "PowerOff"
 HA_TRANSPORT = 64
+POWER_DISCRETE = 1
+POWER_TOGGLE = 2
 
 
 @dataclass(frozen=True)
@@ -26,12 +29,27 @@ class HubDevice:
     ha_tag: str | None = None
     # The {d} token an HA-backed device carries (its integration key).
     key: str | None = None
+    # DeviceFeatures.PowerFeature: 1 discrete, 2 toggle, None no power.
+    power_type: int | None = None
+    power_on_command: str | None = None
+    power_off_command: str | None = None
+    # DeviceFeatures.InputFeature names, or None when the device has none.
+    inputs: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
 class HubActivity:
     id: str
     name: str
+    # Roles[].DeviceId- values, in the activity's order.
+    device_ids: tuple[str, ...] = ()
+    # (Roles[].__type, Roles[].DeviceId-) pairs.
+    roles: tuple[tuple[str, str], ...] = ()
+
+    def role_for(self, device_id: str) -> str | None:
+        """The role this device plays in the activity, or None."""
+        text = str(device_id)
+        return next((role for role, member in self.roles if member == text), None)
 
 
 @dataclass(frozen=True)
@@ -64,6 +82,10 @@ class Catalogue:
                  and token.get("Value")),
                 None,
             )
+            features = entry.get("DeviceFeatures") or []
+            if not isinstance(features, list):
+                features = []
+            power_type, power_on, power_off = _power_fields(features)
             devices.append(HubDevice(
                 id=str(device["Id-"]),
                 name=str(device["Name"]),
@@ -82,6 +104,10 @@ class Catalogue:
                 transport=transport,
                 ha_tag=ha_tag,
                 key=key,
+                power_type=power_type,
+                power_on_command=power_on,
+                power_off_command=power_off,
+                inputs=_input_names(features),
             ))
         activities = []
         for activity in (config.get("activityList") or {}).get("Activities") or []:
@@ -89,7 +115,22 @@ class Catalogue:
                 continue
             if str(activity["Id-"]) == "-1":
                 continue
-            activities.append(HubActivity(id=str(activity["Id-"]), name=str(activity["Name"])))
+            roles = []
+            for role in activity.get("Roles") or []:
+                if not isinstance(role, dict) or role.get("DeviceId-") is None:
+                    continue
+                roles.append((
+                    str(role.get("__type") or ""),
+                    str(role["DeviceId-"]),
+                ))
+            # One membership entry per device, keeping the activity's order.
+            device_ids = tuple(dict.fromkeys(member for _, member in roles))
+            activities.append(HubActivity(
+                id=str(activity["Id-"]),
+                name=str(activity["Name"]),
+                device_ids=device_ids,
+                roles=tuple(roles),
+            ))
         return cls(tuple(devices), tuple(activities))
 
     def device(self, name_or_id: str) -> HubDevice | None:
@@ -112,6 +153,64 @@ class Catalogue:
             return POWER_OFF
         found = next((a for a in self.activities if a.id == activity_id), None)
         return found.name if found else activity_id
+
+
+def _first_ir_command(actions) -> str | None:
+    """The first IRPressAction's command name, or None."""
+    for action in actions or []:
+        if isinstance(action, dict) and action.get("IRCommandName"):
+            return str(action["IRCommandName"])
+    return None
+
+
+def _power_fields(features: list) -> tuple[int | None, str | None, str | None]:
+    """(PowerTypeId, on command, off command) from DeviceFeatures."""
+    feature = next(
+        (f for f in features
+         if isinstance(f, dict) and f.get("__type") == "PowerFeature"),
+        None,
+    )
+    if feature is None:
+        return None, None, None
+    power_type = feature.get("PowerTypeId")
+    if type(power_type) is not int or power_type not in (POWER_DISCRETE, POWER_TOGGLE):
+        return None, None, None
+    if power_type == POWER_TOGGLE:
+        command = _first_ir_command(feature.get("PowerToggleActions"))
+        return power_type, command, command
+    return (
+        power_type,
+        _first_ir_command(feature.get("PowerOnActions")),
+        _first_ir_command(feature.get("PowerOffActions")),
+    )
+
+
+def _input_names(features: list) -> tuple[str, ...] | None:
+    """InputFeature input names, dropping null entries; None when empty."""
+    feature = next(
+        (f for f in features
+         if isinstance(f, dict) and f.get("__type") == "InputFeature"),
+        None,
+    )
+    if feature is None:
+        return None
+    names = tuple(
+        str(item["InputName"])
+        for item in feature.get("Inputs") or []
+        if isinstance(item, dict) and item.get("InputName")
+    )
+    return names or None
+
+
+def extract_state_version(reply) -> str | None:
+    """The stateVersion inside an /api/state reply, however deeply escaped."""
+    if reply is None:
+        return None
+    raw = reply if isinstance(reply, str) else json.dumps(reply)
+    # The engine wraps the digest as a JSON string; drop the escaping so one
+    # expression finds stateVersion at any nesting depth, like the web UI.
+    match = re.search(r'"stateVersion"\s*:\s*"?(\d+)', raw.replace("\\", ""), re.IGNORECASE)
+    return match.group(1) if match else None
 
 
 def _resolve(items, name_or_id: str):

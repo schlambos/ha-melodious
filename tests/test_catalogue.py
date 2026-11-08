@@ -73,6 +73,22 @@ class CatalogueTests(unittest.TestCase):
         self.assertIsNone(catalogue.engine_error(json.dumps({"code": 200, "msg": "OK"})))
         self.assertIsNone(catalogue.engine_error(""))
 
+    def test_state_version_is_found_through_the_engine_wrapping(self):
+        digest = {"cmd": "connect.statedigest?get", "code": 200,
+                  "data": {"result": {"stateVersion": 42, "activityId": 7}}}
+        reply = json.dumps(digest)
+        self.assertEqual(catalogue.extract_state_version(reply), "42")
+        # The hub hands the digest over as a JSON string inside the reply.
+        self.assertEqual(
+            catalogue.extract_state_version(json.dumps({"reply": reply})), "42"
+        )
+        self.assertEqual(
+            catalogue.extract_state_version({"reply": digest}), "42"
+        )
+        self.assertIsNone(catalogue.extract_state_version(None))
+        self.assertIsNone(catalogue.extract_state_version("{}"))
+        self.assertIsNone(catalogue.extract_state_version("garbage"))
+
 
 if __name__ == "__main__":
     unittest.main()

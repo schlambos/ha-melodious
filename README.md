@@ -155,7 +155,11 @@ Devices that exist only on the hub can be mirrored into Home Assistant as real d
 - **No loops.** Devices Melodious already pushed to the hub (the Home Assistant devices in the same Configure flow) are never listed, and a stored mirrored device that later becomes Home Assistant-backed is ignored.
 - **Tap only.** A `button` press sends one command. To hold a command (for example a volume ramp), use `remote.send_command` on the hub's remote entity with `hold_secs`; the button's attributes say the same.
 - **Full vocabulary.** Every command the device has on the hub is offered. Disabling a command in Configure removes its button on the next reload.
-- **Power and inputs** are not part of this step yet; this release mirrors the command buttons and the device identity.
+- **Power is optimistic.** A `switch` exists when the hub reports a power feature. It is on exactly when the device is a member of the running activity and off after PowerOff; `assumed_state` is always true because IR gives no confirmation. Discrete devices send their PowerOn/PowerOff commands, toggle devices send PowerToggle in both directions. Devices with no power feature (the Toping E30) get no switch.
+- **Inputs are optimistic too.** A `select` lists the device's hub inputs and sends the matching `Input<Name>` command. The hub cannot know the real input, so the pick shows after a successful send and resets to unknown when the activity changes. An input with no matching command raises a clear error instead of sending a guess.
+- **Activity membership is diagnostic.** Each mirrored device gets a diagnostic `Activity` sensor: the running activity it belongs to, or `Idle`, with `activity_id` and its role (`VolumeActivityRole`, `DisplayActivityRole`, …).
+- **The hub device gets activity controls.** Alongside the `remote`, it has an activity `select` (activities plus PowerOff), one `button` per activity plus **Power Off**, and an `Activity` sensor whose `members` attribute maps device names to their roles.
+- **Cheap polling.** The coordinator checks `/api/state?version=` every 5 s and only re-reads the full activity config and state when the hub's state version moves (an activity start or stop).
 
 ## Live device state
 

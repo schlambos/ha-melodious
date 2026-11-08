@@ -16,10 +16,10 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .catalogue import engine_error
+from .catalogue import HubActivity, engine_error
 from .const import CONF_MIRROR_DEVICES
 from .coordinator import MelodiousCoordinator
-from .entity import mirror_device_info
+from .entity import hub_device_info, hub_key, mirror_device_info
 from .hub import HubError
 from .mirror import MirrorButtonSpec, mirror_button_specs, pushed_device_keys
 
@@ -43,9 +43,16 @@ async def async_setup_entry(
             entry.options.get(CONF_MIRROR_DEVICES, []),
             pushed_device_keys(entry.options),
         )
-        async_add_entities(
-            [MirrorCommandButton(coordinator, entry, spec) for spec in specs]
+        entities: list[ButtonEntity] = [
+            MirrorCommandButton(coordinator, entry, spec) for spec in specs
+        ]
+        # One button per activity plus PowerOff, on the hub device itself.
+        entities.extend(
+            HubActivityButton(coordinator, entry, activity)
+            for activity in coordinator.catalogue.activities
         )
+        entities.append(HubActivityButton(coordinator, entry, None))
+        async_add_entities(entities)
 
     _add_buttons()
     if not added:
@@ -98,3 +105,30 @@ class MirrorCommandButton(CoordinatorEntity[MelodiousCoordinator], ButtonEntity)
                 f"The hub didn't send {self._spec.command} to "
                 f"{self._spec.device.name}: {why}"
             )
+
+
+class HubActivityButton(CoordinatorEntity[MelodiousCoordinator], ButtonEntity):
+    """One hub activity, or PowerOff when activity is None."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: MelodiousCoordinator,
+        entry: ConfigEntry,
+        activity: HubActivity | None,
+    ) -> None:
+        super().__init__(coordinator)
+        self._activity_id = activity.id if activity is not None else "-1"
+        self._attr_name = activity.name if activity is not None else "Power Off"
+        self._attr_unique_id = f"{hub_key(entry)}_activity_button_{self._activity_id}"
+        self._attr_device_info = hub_device_info(entry)
+
+    async def async_press(self) -> None:
+        try:
+            await self.coordinator.client.run_activity(self._activity_id)
+        except HubError as err:
+            raise HomeAssistantError(
+                f"The hub didn't start {self._attr_name}: {err}"
+            ) from err
+        await self.coordinator.async_request_refresh()

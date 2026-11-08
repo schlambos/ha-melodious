@@ -43,7 +43,7 @@
       },
       "mirror": {
         "title": "Mirror hub devices",
-        "description": "Pick devices that exist only on the hub. Each becomes a Home Assistant device with one button per command. Devices Melodious already pushed to the hub are never listed. Buttons are tap-only; use remote.send_command with hold_secs to hold a command.",
+        "description": "Pick devices that exist only on the hub. Each becomes a Home Assistant device with one button per command, a power switch when the hub reports a power feature, an input select when it has inputs, and a diagnostic activity sensor. Devices Melodious already pushed to the hub are never listed. Buttons are tap-only; use remote.send_command with hold_secs to hold a command.",
         "data": {
           "mirror_devices": "Hub devices to mirror"
         }
