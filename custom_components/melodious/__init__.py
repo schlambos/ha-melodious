@@ -34,6 +34,7 @@ from .const import (
     CONF_WEBHOOK_ID,
     DOMAIN,
     PUSH_DELAY_SECONDS,
+    REFUSED_RETRY_SECONDS,
     RETRY_SECONDS,
     STATE_DEBOUNCE_SECONDS,
     STATE_HEARTBEAT_SECONDS,
@@ -78,6 +79,9 @@ class MelodiousRuntime:
         self.store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
         # The set the hub last took, and the commands a webhook call may run.
         self.sent: dict | None = None
+        # The set the hub last refused: re-sending it gets the same answer.
+        self._refused: dict | None = None
+        self._refused_at = 0.0
         self._hub_seed: dict | None = None
         self.allowed: dict[str, set[str]] = {}
         self.taken_names: set[str] = set()
@@ -113,8 +117,7 @@ class MelodiousRuntime:
         await self.webos.refresh([e.entity_id for e in selected
                                   if e.platform == "webostv" and e.domain == "media_player"])
         self.schedule_state_push(immediate=True)
-        if self._timer is None and self.sent is not None and self._build() != self.sent:
-            self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
+        self._schedule_push_if_changed()
 
     @callback
     def _webos_poll_fired(self, _now: Any) -> None:
@@ -235,6 +238,18 @@ class MelodiousRuntime:
             return device_set
         return build_device_set(self.webhook_url, self.entities(), previous, self.taken_names)
 
+    def _refused_recently(self, device_set: dict) -> bool:
+        return device_set == self._refused and \
+            time.monotonic() - self._refused_at < REFUSED_RETRY_SECONDS
+
+    @callback
+    def _schedule_push_if_changed(self) -> None:
+        if self._timer is not None or self.sent is None:
+            return
+        device_set = self._build()
+        if device_set != self.sent and not self._refused_recently(device_set):
+            self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
+
     async def async_push(self, force: bool = False) -> None:
         """Send the set to the hub. The hub saves nothing when it hasn't changed."""
         self._cancel_timer()
@@ -273,11 +288,13 @@ class MelodiousRuntime:
                     device_set = self._build(warnings)
                 for warning in warnings:
                     _LOGGER.warning("Home Assistant device trimmed: %s", warning)
-                if device_set == self.sent and not force:
+                if not force and (device_set == self.sent or self._refused_recently(device_set)):
                     return
                 result = await self.client.commit(device_set)
             except HubRefused as err:
                 _LOGGER.warning("The hub refused the Home Assistant devices: %s", err)
+                self._refused = device_set
+                self._refused_at = time.monotonic()
                 persistent_notification.async_create(
                     self.hass,
                     f"The hub didn't take the change: {err}",
@@ -290,6 +307,7 @@ class MelodiousRuntime:
                 self._timer = async_call_later(self.hass, RETRY_SECONDS, self._timer_fired)
                 return
             self.sent = device_set
+            self._refused = None
             self.allowed = allowed_values(device_set)
             await self.store.async_save(device_set)
             persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{self.entry.entry_id}")
@@ -383,8 +401,7 @@ class MelodiousRuntime:
             # interval also catches changes not represented in HA attributes.
             self._webos_poll_fired(None)
         self.schedule_state_push(immediate=True)
-        if self._timer is None and self.sent is not None and self._build() != self.sent:
-            self._timer = async_call_later(self.hass, PUSH_DELAY_SECONDS, self._timer_fired)
+        self._schedule_push_if_changed()
 
     def _find_device(self, device_key: str) -> dict | None:
         for device in (self.sent or {}).get("devices", []):
