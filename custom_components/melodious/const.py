@@ -14,6 +14,7 @@ PUSH_DELAY_SECONDS = 5
 # How long to wait before trying the hub again after it couldn't take a set.
 RETRY_SECONDS = 60
 
-# Coalesce live state updates and send a heartbeat within the hub's 90 s stale window.
-STATE_DEBOUNCE_SECONDS = 2
+# Push live state as soon as it changes, then at most this often; the hub
+# takes one push per second. A heartbeat keeps it inside the 90 s stale window.
+STATE_DEBOUNCE_SECONDS = 1.2
 STATE_HEARTBEAT_SECONDS = 30
