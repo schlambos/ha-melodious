@@ -984,6 +984,44 @@ def _normalize_power(state_str: str | None, available: bool) -> str:
     return "unknown"
 
 
+def skip_reason(
+    action: str,
+    state_str: str | None,
+    available: bool,
+    attributes: dict[str, Any] | None = None,
+    theater: dict[str, Any] | None = None,
+) -> str | None:
+    """Why a webhook command needs no service call, or None to run it (§5.5).
+
+    Only discrete commands whose end state can be verified from fresh state
+    skip. Toggles (`toggle`, `button:POWER`), `turn_off` and anything with
+    unknown/unavailable state always run — "turn everything off" must go
+    through even when Home Assistant's state lags the real device.
+    `theater` must be a fresh webOS observation (the caller passes None when
+    stale or the TV is off).
+    """
+    if action == "turn_on":
+        return "already on" if _normalize_power(state_str, available) == "on" else None
+    if action.startswith("webos_input:"):
+        port = action.split(":", 1)[1]
+        if theater and _normalize_power(state_str, available) == "on" \
+                and (theater.get("active_input") or {}).get("id") == port:
+            return f"already on {port}"
+        return None
+    if action.startswith("select_source:"):
+        source = action.split(":", 1)[1]
+        if _normalize_power(state_str, available) == "on" \
+                and (attributes or {}).get("source") == source:
+            return f"already on {source}"
+        return None
+    if action.startswith("select_option:"):
+        option = action.split(":", 1)[1]
+        if available and state_str == option:
+            return f"already on {option}"
+        return None
+    return None
+
+
 def _normalize_playing(state_str: str | None, available: bool) -> str:
     if not available or state_str in (None, "", "unavailable", "unknown"):
         return "unknown"

@@ -48,6 +48,7 @@ from .devices import (
     build_state_payload,
     resolve_v2_command,
     service_call,
+    skip_reason,
 )
 from .hub import HubClient, HubError, HubRefused
 from .webos import POLL_SECONDS, WebOSObservations
@@ -454,6 +455,19 @@ class MelodiousRuntime:
                 "value": value,
             },
         )
+        # The event above always fires (the hub did ask); only the service
+        # call skips when fresh state already matches (§5.5). theater() is
+        # None unless the webOS observation is fresh and the TV is on.
+        reason = skip_reason(
+            action,
+            state.state if state else None,
+            state is not None and state.state != STATE_UNAVAILABLE,
+            attributes,
+            self.webos.theater(entity_id) if platform == "webostv" else None,
+        )
+        if reason:
+            _LOGGER.debug("Skipping %s for %s: %s", value, entity_id, reason)
+            return
         async def execute_service() -> None:
             is_input = action.startswith("webos_input:")
             await self.hass.services.async_call(domain, service, data, blocking=is_input)

@@ -971,5 +971,49 @@ class StableAliasTests(unittest.TestCase):
         self.assertTrue(all(len(v) <= devices.MAX_VALUE for v in values.values()))
 
 
+class SkipReasonTests(unittest.TestCase):
+    """Phase 4b (§5.5): skip a service call only when fresh state already matches."""
+
+    def skip(self, action, state="on", available=True, attributes=None, theater=None):
+        return devices.skip_reason(action, state, available, attributes, theater)
+
+    def test_turn_on_skips_when_already_on(self):
+        for state in ("on", "playing", "idle", "paused"):
+            self.assertIsNotNone(self.skip("turn_on", state), state)
+
+    def test_turn_on_runs_when_off_or_unknown(self):
+        for state, available in (("off", True), ("standby", True), ("unavailable", False),
+                                 ("unknown", True), (None, False)):
+            self.assertIsNone(self.skip("turn_on", state, available), (state, available))
+
+    def test_toggles_and_power_off_never_skip(self):
+        for action in ("toggle", "button:POWER", "turn_off"):
+            self.assertIsNone(self.skip(action, "on"), action)
+            self.assertIsNone(self.skip(action, "off"), action)
+
+    def test_app_launch_turn_on_never_skips(self):
+        self.assertIsNone(self.skip("turn_on:Netflix", "on"))
+
+    def test_webos_input_skips_only_on_the_same_fresh_port(self):
+        theater = {"active_input": {"id": "HDMI_1", "label": "HDMI 1"}}
+        self.assertIsNotNone(self.skip("webos_input:HDMI_1", "on", theater=theater))
+        self.assertIsNone(self.skip("webos_input:HDMI_2", "on", theater=theater))
+        self.assertIsNone(self.skip("webos_input:HDMI_1", "on", theater=None))
+        self.assertIsNone(self.skip("webos_input:HDMI_1", "off", theater=theater))
+        self.assertIsNone(self.skip("webos_input:HDMI_1", "unavailable", False, theater=theater))
+
+    def test_select_source_skips_only_when_on_that_source(self):
+        attrs = {"source": "HDMI 1"}
+        self.assertIsNotNone(self.skip("select_source:HDMI 1", "on", attributes=attrs))
+        self.assertIsNone(self.skip("select_source:HDMI 2", "on", attributes=attrs))
+        self.assertIsNone(self.skip("select_source:HDMI 1", "off", attributes=attrs))
+        self.assertIsNone(self.skip("select_source:HDMI 1", "on", attributes={}))
+
+    def test_select_option_skips_only_when_already_selected(self):
+        self.assertIsNotNone(self.skip("select_option:TV", "TV"))
+        self.assertIsNone(self.skip("select_option:TV", "ARC"))
+        self.assertIsNone(self.skip("select_option:TV", "TV", available=False))
+
+
 if __name__ == "__main__":
     unittest.main()
