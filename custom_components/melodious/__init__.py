@@ -44,9 +44,10 @@ from .devices import (
     DeviceGroup,
     Entity,
     allowed_values,
+    build_combined_set,
     build_device_set,
-    build_merged_set,
     build_state_payload,
+    flatten_deduped,
     resolve_v2_command,
     service_call,
     skip_reason,
@@ -241,8 +242,8 @@ class MelodiousRuntime:
         previous = self._previous()
         groups = self.groups()
         if groups:
-            device_set, _ = build_merged_set(
-                self.webhook_url, groups, self._device_keys(),
+            device_set, _ = build_combined_set(
+                self.webhook_url, groups, self.entities(), self._device_keys(),
                 self._disabled(), previous, self.taken_names, warnings,
             )
             return device_set
@@ -287,7 +288,7 @@ class MelodiousRuntime:
                             title="Melodious",
                             notification_id=f"{DOMAIN}_{self.entry.entry_id}_v2",
                         )
-                        flat = [m for g in groups for m in g.entities]
+                        flat = flatten_deduped(groups, self.entities())
                         device_set = build_device_set(
                             self.webhook_url, flat, self._previous(), self.taken_names)
                     else:

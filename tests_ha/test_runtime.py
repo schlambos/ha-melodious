@@ -168,6 +168,67 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.async_push(force=True)
             self.assertEqual(client.commit.await_count, 2)
 
+    def test_build_includes_singles_beside_merged_devices(self):
+        # Issue #162: _build used to return only the merged set whenever a
+        # whole device was configured, dropping every single entity.
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        features = 128 | 256  # TURN_ON | TURN_OFF
+        self.runtime.groups = lambda: [DeviceGroup(
+            "dev_tv", "TV",
+            entities=[Entity("media_player.tv", "TV", True, features, {})])]
+        self.runtime.entities = lambda: [
+            Entity("media_player.tv", "TV", True, features, {}),  # picked both ways
+            Entity("input_button.movie", "Movie", state="unknown"),
+            Entity("script.goodnight", "Good Night", state="off"),
+        ]
+        device_set = self.runtime._build()
+        kinds = {d.get("key") or d.get("entity") for d in device_set["devices"]}
+        self.assertEqual(
+            kinds, {"media_player.tv", "input_button.movie", "script.goodnight"})
+        listed = [
+            i["entity"] for d in device_set["devices"] for i in d.get("entities") or []
+        ] + [d["entity"] for d in device_set["devices"] if d.get("entity")]
+        self.assertEqual(
+            sorted(listed),
+            ["input_button.movie", "media_player.tv", "script.goodnight"])
+        singles = {d["entity"]: d for d in device_set["devices"] if d.get("entity")}
+        self.assertEqual(
+            singles["input_button.movie"]["commands"],
+            [{"name": "Press", "value": "press"}])
+        self.assertEqual(
+            singles["script.goodnight"]["commands"],
+            [{"name": "Run", "value": "turn_on"}])
+
+    async def test_legacy_push_flattens_groups_and_singles_once(self):
+        # A hub without ha-devices-v2 gets one v1 device per entity, from the
+        # merged devices and the single entities together, each exactly once.
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        client = self.runtime.client
+        client.device_names = AsyncMock(return_value=set())
+        client.features = AsyncMock(return_value=set())
+        client.commit = AsyncMock(return_value={
+            "changed": True, "added": [], "updated": [], "removed": []})
+        self.runtime.store.async_save = AsyncMock()
+        self.runtime.schedule_state_push = lambda immediate=False: None
+        self.runtime.sent = {"webhook": "http://ha/api/webhook/hook", "devices": []}
+        features = 128 | 256  # TURN_ON | TURN_OFF
+        self.runtime.groups = lambda: [DeviceGroup(
+            "dev_tv", "TV",
+            entities=[Entity("media_player.tv", "TV", True, features, {})])]
+        self.runtime.entities = lambda: [
+            Entity("media_player.tv", "TV", True, features, {}),  # picked both ways
+            Entity("input_button.movie", "Movie", state="unknown"),
+            Entity("script.goodnight", "Good Night", state="off"),
+        ]
+        with patch("custom_components.melodious.persistent_notification"):
+            await self.runtime.async_push()
+        device_set = client.commit.await_args.args[0]
+        self.assertEqual(
+            sorted(d["entity"] for d in device_set["devices"]),
+            ["input_button.movie", "media_player.tv", "script.goodnight"])
+        self.assertIn("press", self.runtime.allowed["input_button.movie"])
+        self.assertIn("turn_on", self.runtime.allowed["script.goodnight"])
+
 
 class OptionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_unrelated_configuration_preserves_links(self):

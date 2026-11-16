@@ -901,6 +901,64 @@ def build_merged_set(
     return {"webhook": webhook, "devices": devices}, suppressed
 
 
+def build_combined_set(
+    webhook: str,
+    groups: list[DeviceGroup],
+    entities: list[Entity],
+    keys: dict[str, str],
+    disabled: dict[str, set[str]],
+    previous: dict[str, dict],
+    taken_names: set[str] | None = None,
+    warnings: list[str] | None = None,
+) -> tuple[dict, list[str]]:
+    """Merged v2 devices plus the single entities they don't already cover.
+
+    Picking whole devices must not drop the single entities picked beside
+    them (issue #162). A single entity already inside an emitted merged
+    device is skipped: the hub refuses a set that lists one entity in two
+    devices. Merged devices keep first claim on the 64-device cap and on
+    their names, so a colliding single is renamed, never the merged device.
+    """
+    merged_set, suppressed = build_merged_set(
+        webhook, groups, keys, disabled, previous, taken_names, warnings)
+    merged_devices = merged_set["devices"]
+    # Only devices actually emitted cover an entity: a group that was
+    # suppressed (Cast twin) or trimmed to nothing must not hide a single.
+    covered: set[str] = set()
+    for device in merged_devices:
+        if device.get("entity"):
+            covered.add(device["entity"])
+        covered.update(item["entity"] for item in device.get("entities") or [])
+    remaining = [e for e in entities if e.entity_id not in covered]
+    room = MAX_DEVICES - len(merged_devices)
+    if not remaining or room <= 0:
+        return merged_set, suppressed
+    # A v2 previous spec would leak alias-prefixed commands (or a whole
+    # merged device) into a v1 device; only entity-shaped specs carry over.
+    single_previous = {
+        key: spec for key, spec in previous.items()
+        if spec.get("entity") and not spec.get("entities") and not spec.get("key")
+    }
+    names = set(taken_names or ()) | {d["name"] for d in merged_devices}
+    singles = build_device_set(webhook, remaining, single_previous, names)["devices"]
+    return {"webhook": webhook, "devices": merged_devices + singles[:room]}, suppressed
+
+
+def flatten_deduped(groups: list[DeviceGroup], entities: list[Entity]) -> list[Entity]:
+    """Group members then single entities, each entity_id exactly once.
+
+    The pre-v2 hub fallback sends one v1 device per entity; an entity picked
+    both as part of a device and on its own must still reach the hub once.
+    """
+    seen: set[str] = set()
+    out: list[Entity] = []
+    for entity in [m for g in groups for m in g.entities] + list(entities):
+        if entity.entity_id not in seen:
+            seen.add(entity.entity_id)
+            out.append(entity)
+    return out
+
+
 def resolve_v2_command(
     device_spec: dict, command_value: str
 ) -> tuple[str, str] | None:
@@ -1192,6 +1250,10 @@ def build_state_payload(
         by_entity: dict[str, Entity] = {
             e.entity_id: e for g in kept_groups for e in g.entities
         }
+        # Single-entity devices ride in the same set beside merged ones, so
+        # their entities must answer state lookups too, not "unavailable".
+        for entity in entities:
+            by_entity.setdefault(entity.entity_id, entity)
         for spec in sent_devices[:MAX_DEVICES]:
             key = spec.get("key") or spec.get("entity")
             if not key:
