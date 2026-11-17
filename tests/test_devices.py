@@ -9,12 +9,14 @@ its file here. Run from the repo root:
 import importlib.util
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("melodious_devices", ROOT / "custom_components/melodious/devices.py")
 devices = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = devices
 SPEC.loader.exec_module(devices)
 Entity = devices.Entity
 WEBOS_SPEC = importlib.util.spec_from_file_location("melodious_webos", ROOT / "custom_components/melodious/webos.py")

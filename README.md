@@ -187,4 +187,10 @@ The owner confirmed bidirectional SIMPLINK auto-power sync; that could support a
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+Run the Home Assistant runtime suite in the same environment as CI:
+
+```sh
+docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint python ghcr.io/home-assistant/home-assistant:2026.1.2 -m unittest discover -s tests_ha
+```
+
 Design notes and the hub side are in [docs/HOME_ASSISTANT.md](https://github.com/schlambos/harmony-hub-control/blob/main/docs/HOME_ASSISTANT.md).
