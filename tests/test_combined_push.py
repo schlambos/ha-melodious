@@ -69,6 +69,20 @@ def assert_hub_accepts_mixed(test, device_set):
         keys.add(key)
         test.assertNotIn(d["name"].lower(), names, f"two devices named {d['name']}")
         names.add(d["name"].lower())
+        if "model" in d and d["model"] is not None:
+            test.assertTrue(0 < len(d["model"]) <= 64, d["model"])
+            test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\]', d["model"]), d["model"])
+        if d.get("key") or d.get("entities") is not None:
+            test.assertTrue(1 <= len(d["entities"]) <= 32, len(d["entities"]))
+            aliases = set()
+            for item in d["entities"]:
+                test.assertTrue(0 < len(item["alias"]) <= 64, item["alias"])
+                test.assertRegex(item["alias"], r"^[a-z0-9_.]+$")
+                aliases.add(item["alias"])
+            for c in d["commands"]:
+                alias, sep, action = c["value"].partition(":")
+                test.assertTrue(sep and action, c["value"])
+                test.assertIn(alias, aliases, c["value"])
         members = [i["entity"] for i in d.get("entities") or []] or [d["entity"]]
         for entity_id in members:
             test.assertNotIn(entity_id, entities, f"{entity_id} in two devices")
@@ -214,6 +228,83 @@ class CombinedSetTests(unittest.TestCase):
             any(c["value"].startswith("media_player.tv:") for c in single["commands"]),
             single["commands"])
         assert_hub_accepts_mixed(self, device_set)
+
+    def test_hue_model_with_quotes_or_long_name_is_cleaned_for_hub(self):
+        # Hue lamps/lightstrips carry inch quotes in device.model (e.g. 65" or 5/6").
+        # codexactivity rejects quotes/backslashes/>64 chars in model with HTTP 422,
+        # which blocks the entire batch including single scripts pushed beside it.
+        hue = devices.DeviceGroup(
+            "dev_hue_strip",
+            "TV Backlight",
+            manufacturer="Signify Netherlands B.V.",
+            model='Hue Play gradient lightstrip 65" (LCX002) ' + "x" * 40,
+            entities=[Entity("light.tv_backlight", "TV Backlight", True, 0,
+                             {"supported_color_modes": ["xy"]})],
+        )
+        device_set, _ = combined([hue], [script()])
+        assert_hub_accepts_mixed(self, device_set)
+        self.assertIn("script.good_night", {d.get("entity") for d in device_set["devices"]})
+
+    def test_hue_room_with_many_scenes_sensors_and_long_ids_respects_hub_limits(self):
+        # A Hue Room/Zone can have >32 scenes/lights plus unsupported sensors/events
+        # and >64-char entity IDs. codexactivity refuses >32 entities or >64-char
+        # aliases with HTTP 422, blocking single entities in the same push.
+        long_sensor = "sensor." + "hue_living_room_zigbee_connectivity_status_" + "a" * 35
+        long_remote = "remote." + "hue_living_room_unsupported_remote_helper_" + "b" * 35
+        members = [
+            Entity(long_sensor, "Connectivity", True),
+            Entity(long_remote, "Remote", True),
+            Entity("light.living_room_hue", "Living Room", True, 0,
+                   {"supported_color_modes": ["xy"]}),
+            *[Entity(f"scene.living_room_hue_scene_{i:02d}", f"Scene {i}", True) for i in range(40)],
+        ]
+        hue_room = devices.DeviceGroup("dev_hue_room", "Living Room Hue", entities=members)
+        device_set, _ = combined([hue_room], [script()])
+        assert_hub_accepts_mixed(self, device_set)
+        merged = next(d for d in device_set["devices"] if d.get("key"))
+        # Fallback key skips unsupported sensor.* and picks a supported entity.
+        self.assertNotEqual(merged["key"], long_sensor)
+        # Unsupported sensor.* is excluded from entities table.
+        self.assertNotIn(long_sensor, {item["entity"] for item in merged["entities"]})
+        self.assertIn("script.good_night", {d.get("entity") for d in device_set["devices"]})
+
+    def test_recreated_hub_seed_of_v2_merged_device_never_double_prefixes(self):
+        # After deleting and recreating the hub entry in HA, _hub_seed comes from
+        # hub_ha_devices(/api/activity-config). Existing v2 devices already carry
+        # "<alias>:<action>" values and must not be double-prefixed or mistaken
+        # for v1 single devices.
+        config = {"deviceList": {"DevicesWithFeatures": [{
+            "Device": {
+                "Name": "Living Room Hue",
+                "AutoDetectedDevice": {"Id": "melodious-ha-1"},
+                "Tokens": {"Parameters": [{"Key": "{d}", "Value": "light.hue_living_room"}]},
+            },
+            "Commands": [
+                {"Name": "PowerOn", "Parameters": [{"Key": "{c}", "Value": "light.hue_living_room:turn_on"}]},
+                {"Name": "PowerOff", "Parameters": [{"Key": "{c}", "Value": "light.hue_living_room:turn_off"}]},
+                {"Name": "BrightnessUp", "Parameters": [{"Key": "{c}", "Value": "light.hue_living_room:brightness_up"}]},
+                {"Name": "Activate", "Parameters": [{"Key": "{c}", "Value": "scene.hue_relax:turn_on"}]},
+            ],
+        }]}}
+        seeded = devices.hub_ha_devices(config)
+        previous = previous_by_key_and_entity({"devices": seeded})
+        # Light now reports onoff-only (e.g. while unavailable/restarting) so
+        # BrightnessUp comes from previous; scene.hue_relax is still on the device.
+        hue = devices.DeviceGroup(
+            "dev_hue", "Living Room Hue",
+            entities=[
+                Entity("light.hue_living_room", "Living Room", True, 0,
+                       {"supported_color_modes": ["onoff"]}),
+                Entity("scene.hue_relax", "Relax", True),
+            ],
+        )
+        device_set, _ = combined([hue], [script()], previous=previous)
+        assert_hub_accepts_mixed(self, device_set)
+        merged = next(d for d in device_set["devices"] if d.get("key") == "light.hue_living_room")
+        values = {c["name"]: c["value"] for c in merged["commands"]}
+        self.assertEqual(values["BrightnessUp"], "light.hue_living_room:brightness_up")
+        self.assertEqual(values["Activate"], "scene.hue_relax:turn_on")
+        self.assertFalse(any(v.count(":") > 1 for v in values.values()), values)
 
 
 class LegacyFlattenTests(unittest.TestCase):

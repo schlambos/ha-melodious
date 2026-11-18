@@ -37,6 +37,7 @@ SUPPORTED_DOMAINS = (
 )
 
 MAX_DEVICES = 64
+MAX_ENTITIES = 32
 MAX_COMMANDS = 128
 MAX_INPUTS = 32
 MAX_NAME = 64
@@ -617,6 +618,27 @@ def _short_alias(entity_id: str) -> str:
     return "e" + hashlib.sha1(entity_id.encode()).hexdigest()[:8]
 
 
+_V1_PREFIXED_ACTIONS = frozenset({
+    "select_source",
+    "select_option",
+    "send_command",
+    "turn_on",
+    "button",
+    "webos_input",
+})
+_SHORT_ALIAS_RE = re.compile(r"^e[0-9a-f]{8}$")
+
+
+def _v2_command_alias(value: str) -> str | None:
+    """Return the v2 alias prefix when `value` is `<alias>:<action>`, else None."""
+    alias, sep, action = str(value).partition(":")
+    if not sep or not action or alias in _V1_PREFIXED_ACTIONS:
+        return None
+    if _ENTITY_RE.match(alias) or _SHORT_ALIAS_RE.match(alias):
+        return alias
+    return None
+
+
 def _v2_previous(previous: dict, entities_table: list[dict]) -> dict | None:
     """A previous spec with v2 aliases, so a v1 device migrates cleanly.
 
@@ -626,31 +648,40 @@ def _v2_previous(previous: dict, entities_table: list[dict]) -> dict | None:
     only needs its values rewritten if the entity's alias changed.
     """
     alias_by_entity = {item["entity"]: item["alias"] for item in entities_table}
+    valid_aliases = set(alias_by_entity.values())
     if previous.get("key") or previous.get("entities"):
         changes = {}
         for item in previous.get("entities", []):
             new = alias_by_entity.get(item["entity"])
             if new and new != item["alias"]:
                 changes[item["alias"]] = new
-        if not changes:
-            return previous
         out = dict(previous)
         out["commands"] = []
         for command in previous.get("commands", []):
             alias, sep, rest = str(command.get("value", "")).partition(":")
-            if sep and alias in changes:
-                command = dict(command, value=f"{changes[alias]}:{rest}")
-            out["commands"].append(command)
+            if not sep or not rest:
+                continue
+            if alias in changes:
+                alias = changes[alias]
+                command = dict(command, value=f"{alias}:{rest}")
+            if alias in valid_aliases:
+                out["commands"].append(command)
         return out
     entity = previous.get("entity")
     alias = alias_by_entity.get(entity) if entity else None
     if not alias:
         return None
     out = dict(previous)
-    out["commands"] = [
-        dict(command, value=f"{alias}:{command['value']}")
-        for command in previous.get("commands", [])
-    ]
+    rewritten = []
+    for command in previous.get("commands", []):
+        val = str(command.get("value", ""))
+        existing_alias = _v2_command_alias(val)
+        if existing_alias:
+            if existing_alias in valid_aliases:
+                rewritten.append(command)
+            continue
+        rewritten.append(dict(command, value=f"{alias}:{val}"))
+    out["commands"] = rewritten
     return out
 
 
@@ -682,12 +713,12 @@ def merge_device(
     v1_actions = ([str(c.get("value", "")) for c in (previous or {}).get("commands") or []]
                   if previous and previous.get("entity") and not previous.get("entities") else [])
     for entity in sorted(group.entities, key=lambda e: e.entity_id):
-        if not _ENTITY_RE.match(entity.entity_id):
+        if not _ENTITY_RE.match(entity.entity_id) or entity.domain not in SUPPORTED_DOMAINS:
             continue
         alias = previous_alias.get(entity.entity_id) or entity.entity_id
+        if len(alias) > 64:
+            alias = _short_alias(entity.entity_id)
         entities_table.append({"alias": alias, "entity": entity.entity_id})
-        if entity.domain not in SUPPORTED_DOMAINS:
-            continue
         names, entity_power, entity_inputs = _commands_for(entity, merged=True)
         if not names:
             continue
@@ -734,6 +765,17 @@ def merge_device(
                 f"dropped {len(dropped)} ({dropped_apps} app commands)"
             )
         commands = commands[:MAX_COMMANDS]
+    # The hub caps each merged device at MAX_ENTITIES (32) entries in entities.
+    # Keep every entity referenced by a command first, then fill up to the cap.
+    if len(entities_table) > MAX_ENTITIES:
+        used_aliases = {value.partition(":")[0] for _, value in commands}
+        prioritized = [item for item in entities_table if item["alias"] in used_aliases]
+        others = [item for item in entities_table if item["alias"] not in used_aliases]
+        entities_table = (prioritized + others)[:MAX_ENTITIES]
+        kept_aliases = {item["alias"] for item in entities_table}
+        commands = [(n, v) for n, v in commands if v.partition(":")[0] in kept_aliases]
+        if not commands:
+            return None
     kept = {n for n, _ in commands}
     inputs = [i for i in inputs if i["command"] in kept]
     spec: dict[str, Any] = {
@@ -742,8 +784,9 @@ def merge_device(
         "entities": entities_table,
         "commands": [{"name": n, "value": v} for n, v in commands],
     }
-    if group.model:
-        spec["model"] = group.model
+    model = clean_label(group.model) if group.model else ""
+    if model:
+        spec["model"] = model
     if power:
         spec["power"] = power
     if inputs:
@@ -883,8 +926,14 @@ def build_merged_set(
                 if entity.entity_id in previous:
                     before = previous[entity.entity_id]
                     break
-            key = before.get("key", before.get("entity")) if before else group.entities[0].entity_id \
-                if group.entities else group.device_id
+            supported_key = next(
+                (e.entity_id for e in group.entities
+                 if e.domain in SUPPORTED_DOMAINS and _ENTITY_RE.match(e.entity_id)),
+                None,
+            )
+            key = before.get("key", before.get("entity")) if before else (
+                supported_key or (group.entities[0].entity_id if group.entities else group.device_id)
+            )
         before = previous.get(key)
         if before is None:
             for entity in group.entities:
@@ -1027,7 +1076,20 @@ def hub_ha_devices(config: dict) -> list[dict]:
                           if p.get("Key") == "{c}"), None)
             if command.get("Name") and value:
                 commands.append({"name": command["Name"], "value": value})
-        devices.append({"entity": key, "name": device.get("Name", ""), "commands": commands})
+        aliases = [_v2_command_alias(c["value"]) for c in commands]
+        if commands and all(aliases):
+            entity_entries = [
+                {"alias": alias, "entity": alias}
+                for alias in sorted({a for a in aliases if a and _ENTITY_RE.match(a)})
+            ]
+            devices.append({
+                "key": key,
+                "name": device.get("Name", ""),
+                "entities": entity_entries,
+                "commands": commands,
+            })
+        else:
+            devices.append({"entity": key, "name": device.get("Name", ""), "commands": commands})
     return devices
 
 
