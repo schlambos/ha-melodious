@@ -199,6 +199,54 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             singles["script.goodnight"]["commands"],
             [{"name": "Run", "value": "turn_on"}])
 
+    async def test_push_succeeds_with_hue_merged_device_and_single_script_after_recreate(self):
+        # Issue #162 follow-up: after deleting/recreating the hub with an
+        # existing merged Hue device (inch quotes in model, >32 entities,
+        # unsupported sensors, v2 hub seed), pushing a single script alongside
+        # the Hue device must emit a valid hub payload and not double-prefix.
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        client = self.runtime.client
+        client.device_names = AsyncMock(return_value=set())
+        client.ha_devices = AsyncMock(return_value=[{
+            "key": "light.hue_strip",
+            "name": "TV Backlight",
+            "entities": [{"alias": "light.hue_strip", "entity": "light.hue_strip"}],
+            "commands": [
+                {"name": "PowerOn", "value": "light.hue_strip:turn_on"},
+                {"name": "BrightnessUp", "value": "light.hue_strip:brightness_up"},
+            ],
+        }])
+        client.features = AsyncMock(return_value={"ha-devices-v2"})
+        client.commit = AsyncMock(return_value={
+            "changed": True, "added": ["script.goodnight"], "updated": [], "removed": []})
+        self.runtime.store.async_save = AsyncMock()
+        self.runtime.schedule_state_push = lambda immediate=False: None
+        self.runtime.sent = None  # freshly recreated hub entry
+        hue_members = [
+            Entity("sensor." + "hue_connectivity_" + "x" * 60, "Connectivity", True),
+            Entity("light.hue_strip", "TV Backlight", True, 0,
+                   {"supported_color_modes": ["onoff"]}),
+            *[Entity(f"scene.hue_scene_{i:02d}", f"Scene {i}", True) for i in range(36)],
+        ]
+        self.runtime.groups = lambda: [DeviceGroup(
+            "dev_hue", "TV Backlight",
+            manufacturer="Signify",
+            model='Hue Play gradient lightstrip 65"',
+            entities=hue_members,
+        )]
+        self.runtime.entities = lambda: [Entity("script.goodnight", "Good Night", state="off")]
+        with patch("custom_components.melodious.persistent_notification"):
+            await self.runtime.async_push(force=True)
+        payload = client.commit.await_args.args[0]
+        by_key = {d.get("key") or d.get("entity"): d for d in payload["devices"]}
+        self.assertIn("script.goodnight", by_key)
+        hue = by_key["light.hue_strip"]
+        self.assertNotIn('"', hue["model"])
+        self.assertLessEqual(len(hue["entities"]), 32)
+        self.assertTrue(all(len(i["alias"]) <= 64 for i in hue["entities"]))
+        values = {c["name"]: c["value"] for c in hue["commands"]}
+        self.assertEqual(values["BrightnessUp"], "light.hue_strip:brightness_up")
+
     async def test_legacy_push_flattens_groups_and_singles_once(self):
         # A hub without ha-devices-v2 gets one v1 device per entity, from the
         # merged devices and the single entities together, each exactly once.
