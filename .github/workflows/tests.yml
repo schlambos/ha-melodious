@@ -13,3 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint python ghcr.io/home-assistant/home-assistant:2026.1.2 -m unittest discover -s tests_ha
+  # 2026.11 replaced DeviceInfo's via_device with via_device_id (#202).
+  runtime-2026-11:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint python ghcr.io/home-assistant/home-assistant:2026.11.1 -m unittest discover -s tests_ha

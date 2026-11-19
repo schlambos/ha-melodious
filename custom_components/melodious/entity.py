@@ -9,6 +9,11 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from .catalogue import HubDevice
 from .const import DOMAIN
 
+# Home Assistant 2026.11 links a device to its parent by the parent's registry
+# id (via_device_id) and deprecates the (domain, identifier) via_device, which
+# stops working in 2027.8. Older releases only know via_device.
+VIA_DEVICE_ID = "via_device_id" in getattr(DeviceInfo, "__optional_keys__", ())
+
 
 def hub_key(entry: ConfigEntry) -> str:
     """The stable per-hub key used by every entity's unique_id."""
@@ -32,10 +37,15 @@ def mirror_device_info(entry: ConfigEntry, device: HubDevice) -> DeviceInfo:
     and the hub's numeric device id are joined into one identifier. The hub's
     Id- never changes when the device is renamed.
     """
-    return DeviceInfo(
+    info = DeviceInfo(
         identifiers={(DOMAIN, f"{entry.data[CONF_HOST]}:{device.id}")},
         manufacturer=device.manufacturer or "Harmony",
         model=device.model,
         name=device.name,
-        via_device=(DOMAIN, hub_key(entry)),
     )
+    if not VIA_DEVICE_ID:
+        info["via_device"] = (DOMAIN, hub_key(entry))
+    elif hub_device_id := getattr(getattr(entry, "runtime_data", None), "hub_device_id", None):
+        # Set up by async_setup_entry before any platform adds an entity.
+        info["via_device_id"] = hub_device_id
+    return info
