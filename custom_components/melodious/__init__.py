@@ -105,6 +105,8 @@ class MelodiousRuntime:
         self._ha_state_supported: bool | None = None
         self._ha_state_skip_logged = False
         self.coordinator: MelodiousCoordinator | None = None
+        # The hub's device-registry id, which mirrored devices link to.
+        self.hub_device_id: str | None = None
         self.webos = WebOSObservations(self._read_webos, self._webos_is_on)
 
     def _webos_is_on(self, entity_id: str) -> bool:
@@ -497,9 +499,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
     runtime.coordinator = coordinator
     entry.runtime_data = runtime
     # Create the hub device before the platforms so mirrored devices can point
-    # at it with via_device regardless of platform setup order.
+    # at it (by its registry id) regardless of platform setup order.
     info = hub_device_info(entry)
-    dr.async_get(hass).async_get_or_create(
+    hub_device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers=info["identifiers"],
         manufacturer=info.get("manufacturer"),
@@ -507,6 +509,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MelodiousConfigEntry) ->
         name=info.get("name"),
         configuration_url=info.get("configuration_url"),
     )
+    runtime.hub_device_id = hub_device.id
     await coordinator.async_refresh()
 
     async def handle_webhook(hass: HomeAssistant, webhook_id: str, request: web.Request) -> web.Response:
