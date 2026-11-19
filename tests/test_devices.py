@@ -88,7 +88,7 @@ def assert_hub_accepts(test, device_set):
     entities, names = set(), set()
     for d in device_set["devices"]:
         test.assertRegex(d["entity"], r"^[a-z0-9_]+\.[a-z0-9_]+$")
-        test.assertTrue(0 < len(d["name"]) <= 64 and not re.search(r'[\x00-\x1f\x7f"\\]', d["name"]), d["name"])
+        test.assertTrue(0 < len(d["name"].encode("utf-8")) <= 64 and not re.search(r'[\x00-\x1f\x7f"\\]', d["name"]), d["name"])
         test.assertNotIn(d["entity"], entities)
         test.assertNotIn(d["name"].lower(), names)
         entities.add(d["entity"])
@@ -97,8 +97,8 @@ def assert_hub_accepts(test, device_set):
         test.assertTrue(0 < len(d["commands"]) <= 128)
         for c in d["commands"]:
             test.assertRegex(c["name"], r"^[A-Za-z0-9][A-Za-z0-9 _.+\-]*$")
-            test.assertLessEqual(len(c["name"]), 48)
-            test.assertTrue(0 < len(c["value"]) <= 96 and not re.search(r'[\x00-\x1f\x7f"\\%{}]', c["value"]), c)
+            test.assertLessEqual(len(c["name"].encode("utf-8")), 48)
+            test.assertTrue(0 < len(c["value"].encode("utf-8")) <= 96 and not re.search(r'[\x00-\x1f\x7f"\\%{}]', c["value"]), c)
             test.assertNotIn(c["name"].lower(), commands)
             commands[c["name"].lower()] = c
         if "power" in d:
@@ -276,8 +276,11 @@ def assert_hub_accepts_v2(test, device_set):
         test.assertLessEqual(len(d["key"]), 128)
         test.assertNotIn(d["key"], keys)
         test.assertNotIn(d["name"].lower(), names)
-        test.assertTrue(0 < len(d["name"]) <= 64)
+        test.assertTrue(0 < len(d["name"].encode("utf-8")) <= 64)
         test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\]', d["name"]))
+        if "model" in d and d["model"] is not None:
+            test.assertTrue(0 < len(d["model"].encode("utf-8")) <= 64, d["model"])
+            test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\]', d["model"]), d["model"])
         keys.add(d["key"])
         names.add(d["name"].lower())
         aliases = set()
@@ -293,10 +296,10 @@ def assert_hub_accepts_v2(test, device_set):
         seen = set()
         for c in d["commands"]:
             test.assertRegex(c["name"], r"^[A-Za-z0-9][A-Za-z0-9 _.+\-]*$")
-            test.assertLessEqual(len(c["name"]), 48)
+            test.assertLessEqual(len(c["name"].encode("utf-8")), 48)
             test.assertNotIn(c["name"].lower(), seen)
             seen.add(c["name"].lower())
-            test.assertTrue(0 < len(c["value"]) <= 96)
+            test.assertTrue(0 < len(c["value"].encode("utf-8")) <= 96)
             test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\%{}]', c["value"]))
             alias, sep, action = c["value"].partition(":")
             test.assertTrue(sep and action, c["value"])
@@ -311,6 +314,7 @@ def assert_hub_accepts_v2(test, device_set):
         test.assertLessEqual(len(d.get("inputs", [])), 32)
         input_names = set()
         for i in d.get("inputs", []):
+            test.assertTrue(0 < len(i["name"].encode("utf-8")) <= 64, i["name"])
             test.assertIn(i["command"].lower(), seen)
             test.assertNotIn(i["name"].lower(), input_names)
             input_names.add(i["name"].lower())
@@ -743,6 +747,97 @@ class SelectTests(unittest.TestCase):
         self.assertEqual(devices.service_call("select.avr", "select_option:Input: TV"),
                          ("select", "select_option",
                           {"entity_id": "select.avr", "option": "Input: TV"}))
+
+    def test_accented_options_transliterate_in_commands_and_keep_utf8_labels_and_values(self):
+        # Issue #162: "Détente" must become "Input Detente", not "Input Dtente",
+        # while keeping the exact UTF-8 input label and select_option value.
+        options = ["Détente", "Éclairage", "Ça va", "Cœur", "Œuvre", "Über", "Noël", "Straße", "Łódź"]
+        entity = Entity("select.salon_scene", "Salon", True, 0, {"options": options})
+        spec, _ = merged_spec([entity], name="Salon", device_id="salon")
+        values = {c["name"]: c["value"] for c in spec["commands"]}
+        expected = {
+            "Détente": "Input Detente",
+            "Éclairage": "Input Eclairage",
+            "Ça va": "Input Ca va",
+            "Cœur": "Input Coeur",
+            "Œuvre": "Input Oeuvre",
+            "Über": "Input Uber",
+            "Noël": "Input Noel",
+            "Straße": "Input Strasse",
+            "Łódź": "Input Lodz",
+        }
+        for option, cmd in expected.items():
+            self.assertEqual(values.get(cmd), f"select.salon_scene:select_option:{option}", option)
+        self.assertEqual([i["name"] for i in spec["inputs"]], options)
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
+    def test_accented_command_upgrade_keeps_old_stripped_command_name(self):
+        # Upgrade path: an existing hub device whose "Détente" option was
+        # previously emitted as "Input Dtente" keeps "Input Dtente" alongside
+        # the new "Input Detente" so buttons/activities bound to "Input Dtente"
+        # do not trigger a hub refusal, and the device key never changes.
+        old = {
+            "key": "select.salon_scene",
+            "name": "Salon",
+            "entities": [{"alias": "select.salon_scene", "entity": "select.salon_scene"}],
+            "commands": [{"name": "Input Dtente", "value": "select.salon_scene:select_option:Détente"}],
+            "inputs": [{"name": "Détente", "command": "Input Dtente"}],
+        }
+        entity = Entity("select.salon_scene", "Salon", True, 0, {"options": ["Détente"]})
+        spec, _ = merged_spec([entity], name="Salon", device_id="salon",
+                              previous={"select.salon_scene": old})
+        self.assertEqual(spec["key"], "select.salon_scene")
+        values = {c["name"]: c["value"] for c in spec["commands"]}
+        self.assertEqual(values["Input Detente"], "select.salon_scene:select_option:Détente")
+        self.assertEqual(values["Input Dtente"], "select.salon_scene:select_option:Détente")
+        self.assertEqual(spec["inputs"], [{"name": "Détente", "command": "Input Detente"}])
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
+
+class Utf8LimitsTests(unittest.TestCase):
+    def test_clean_label_truncates_by_utf8_bytes_without_splitting_characters(self):
+        # 63 ASCII chars + 2-byte "é" is 64 chars but 65 UTF-8 bytes; Lua's
+        # haLabel checks #text <= 64 bytes.
+        name = "a" * 63 + "é"
+        cleaned = devices.clean_label(name)
+        self.assertEqual(cleaned, "a" * 63)
+        self.assertLessEqual(len(cleaned.encode("utf-8")), 64)
+        all_accents = devices.clean_label("é" * 40)
+        self.assertEqual(all_accents, "é" * 32)
+        self.assertEqual(len(all_accents.encode("utf-8")), 64)
+
+    def test_duplicate_multibyte_names_stay_within_64_utf8_bytes(self):
+        base = "Éclairage " + "é" * 30
+        entities = [Entity("light.a", base, True), Entity("light.b", base, True)]
+        device_set = devices.build_device_set(WEBHOOK, entities)
+        assert_hub_accepts(self, device_set)
+        self.assertEqual(len({d["name"].lower() for d in device_set["devices"]}), 2)
+
+    def test_multibyte_values_check_utf8_byte_length_and_short_alias(self):
+        # An option whose char length with full alias is <= 96 (78 chars) but
+        # whose UTF-8 byte length exceeds 96 (107 bytes) must switch to a short
+        # alias; an option exceeding 64 UTF-8 bytes (36 chars, 67 bytes) must
+        # be skipped instead of triggering a hub 422 on input.name.
+        borderline = "Scène " + "é" * 28  # 34 chars, 63 UTF-8 bytes
+        too_long = "Scène " + "é" * 30    # 36 chars, 67 UTF-8 bytes (> 64 bytes)
+        entity = Entity("select.salon_scene_controller", "Salon", True, 0,
+                        {"options": [borderline, too_long]})
+        spec, _ = merged_spec([entity], name="Salon", device_id="salon")
+        self.assertRegex(spec["entities"][0]["alias"], r"^e[0-9a-f]{8}$")
+        values = [c["value"] for c in spec["commands"]]
+        self.assertTrue(any(v.endswith(borderline) for v in values))
+        self.assertFalse(any(too_long in v for v in values))
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
+    def test_accented_cast_twin_names_transliterate_cleanly(self):
+        # "Télé" alone must fold to one word "tele", not two fragments "t l",
+        # so it doesn't falsely match a different room ending in "Télé".
+        self.assertEqual(devices._device_name_key("Télé"), "tele")
+        self.assertEqual(devices._device_name_key("[LG] Télé Salon"), "tele salon")
+        self.assertTrue(devices._same_device_name(
+            devices._device_name_key("LG Télé Salon"),
+            devices._device_name_key("[LG] Télé Salon"),
+        ))
 
 
 class CastProfileTests(unittest.TestCase):

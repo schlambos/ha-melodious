@@ -247,6 +247,85 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         values = {c["name"]: c["value"] for c in hue["commands"]}
         self.assertEqual(values["BrightnessUp"], "light.hue_strip:brightness_up")
 
+    async def test_push_notifies_on_retained_devices_and_keeps_hub_seed(self):
+        # Issue #162: when an unpushed device ("Salon") is still used by MapList,
+        # the hub retains it and commits other devices (like a single script).
+        # HA must surface a clear notification naming Salon and MapList, keep
+        # Salon's seed in case it is re-selected, and dismiss once cleared.
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        client = self.runtime.client
+        client.device_names = AsyncMock(return_value=set())
+        client.ha_devices = AsyncMock(return_value=[{
+            "key": "scene.salon_legacy",
+            "name": "Salon",
+            "entities": [{"alias": "light.salon", "entity": "light.salon"}],
+            "commands": [
+                {"name": "PowerOn", "value": "light.salon:turn_on"},
+                {"name": "PowerOff", "value": "light.salon:turn_off"},
+            ],
+        }])
+        client.features = AsyncMock(return_value={"ha-devices-v2"})
+        client.commit = AsyncMock(return_value={
+            "ok": True,
+            "changed": True,
+            "added": ["Good Night"],
+            "updated": [],
+            "removed": [],
+            "retained": [{"name": "Salon", "deviceId": "39000001", "usedBy": ["MapList"]}],
+        })
+        self.runtime.store.async_save = AsyncMock()
+        self.runtime.schedule_state_push = lambda immediate=False: None
+        self.runtime.sent = None  # freshly recreated hub entry
+        self.runtime.groups = lambda: []
+        self.runtime.entities = lambda: [Entity("script.goodnight", "Good Night", state="off")]
+        with patch("custom_components.melodious.persistent_notification") as notif:
+            await self.runtime.async_push(force=True)
+            self.assertIn("script.goodnight", self.runtime.allowed)
+            # Refusal notification dismissed; retained notification created naming Salon + MapList.
+            notif.async_dismiss.assert_any_call(self.hass, "melodious_test")
+            notif.async_create.assert_called_once()
+            msg = notif.async_create.call_args.args[1]
+            self.assertIn("Salon", msg)
+            self.assertIn("MapList", msg)
+            self.assertEqual(notif.async_create.call_args.kwargs["notification_id"], "melodious_test_retained")
+
+            # Later, the user re-selects Salon alongside the script: Salon must
+            # keep its hub key from _hub_seed, and once retained is empty the
+            # retained notification is dismissed.
+            notif.reset_mock()
+            client.commit = AsyncMock(return_value={
+                "ok": True, "changed": True, "added": [], "updated": ["Salon"],
+                "removed": [], "retained": [],
+            })
+            self.runtime.groups = lambda: [DeviceGroup(
+                "dev_salon", "Salon",
+                entities=[Entity("light.salon", "Salon", True, 0, {"supported_color_modes": ["xy"]})],
+            )]
+            await self.runtime.async_push(force=True)
+            payload = client.commit.await_args.args[0]
+            salon_spec = next(d for d in payload["devices"] if d.get("name") == "Salon")
+            self.assertEqual(salon_spec["key"], "scene.salon_legacy")
+            notif.async_dismiss.assert_any_call(self.hass, "melodious_test_retained")
+
+    async def test_push_refusal_keeps_hub_error_in_notification(self):
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        client = self.runtime.client
+        client.device_names = AsyncMock(return_value=set())
+        client.features = AsyncMock(return_value={"ha-devices-v2"})
+        client.commit = AsyncMock(side_effect=HubRefused(
+            "Salon: an activity, button or sequence still uses command poweron"))
+        self.runtime.sent = {"webhook": "http://ha/api/webhook/hook", "devices": []}
+        self.runtime.groups = lambda: []
+        self.runtime.entities = lambda: [Entity("script.goodnight", "Good Night", state="off")]
+        with patch("custom_components.melodious.persistent_notification") as notif:
+            await self.runtime.async_push(force=True)
+            notif.async_create.assert_called_once()
+            self.assertIn(
+                "Salon: an activity, button or sequence still uses command poweron",
+                notif.async_create.call_args.args[1],
+            )
+            self.assertEqual(notif.async_create.call_args.kwargs["notification_id"], "melodious_test")
+
     async def test_legacy_push_flattens_groups_and_singles_once(self):
         # A hub without ha-devices-v2 gets one v1 device per entity, from the
         # merged devices and the single entities together, each exactly once.

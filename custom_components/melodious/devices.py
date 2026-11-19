@@ -18,6 +18,7 @@ The limits below match the hub's writer; it refuses a set that breaks them.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -146,20 +147,56 @@ class DeviceGroup:
     entities: list[Entity] = field(default_factory=list)
 
 
+_TRANSLITERATE_MAP = str.maketrans({
+    "Æ": "Ae", "æ": "ae",
+    "Œ": "Oe", "œ": "oe",
+    "ß": "ss", "ẞ": "SS",
+    "Ø": "O", "ø": "o",
+    "Ł": "L", "ł": "l",
+    "Đ": "D", "đ": "d",
+    "Ð": "D", "ð": "d",
+    "Þ": "Th", "þ": "th",
+    "ı": "i",
+    "Ĳ": "Ij", "ĳ": "ij",
+})
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """Truncate text to at most max_bytes UTF-8 bytes without splitting a char."""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore").strip()
+
+
+def _transliterate_ascii(text: str) -> str:
+    """Fold accented and Latin-extended letters to ASCII without deleting them."""
+    expanded = str(text or "").translate(_TRANSLITERATE_MAP)
+    decomposed = unicodedata.normalize("NFKD", expanded)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
 def clean_label(text: str, limit: int = MAX_NAME) -> str:
-    """A name the hub accepts: no quotes, backslashes or control characters."""
+    """A name the hub accepts: no quotes, backslashes or control characters,
+    bounded in UTF-8 bytes to match the hub's Lua length check."""
     text = _BAD_LABEL_RE.sub(" ", str(text or ""))
-    return " ".join(text.split())[:limit].strip()
+    return _truncate_utf8(" ".join(text.split()), limit)
 
 
 def _value_ok(value: str) -> bool:
-    return 0 < len(value) <= MAX_VALUE and not _BAD_VALUE_RE.search(value)
+    return 0 < len(value.encode("utf-8")) <= MAX_VALUE and not _BAD_VALUE_RE.search(value)
 
 
 def _prefixed_command_name(prefix: str, label: str, taken: set[str]) -> str:
     """A command name from a label ("Input HDMI 1", "App Netflix"), kept
-    unique so a reordered list never re-points a button or an activity."""
-    base = (prefix + " " + " ".join(re.sub(r"[^A-Za-z0-9 _.+-]", "", label).split())).strip()[:44]
+    unique so a reordered list never re-points a button or an activity.
+
+    Command names stay ASCII because codexactivity rejects non-ASCII in
+    command names and the Touch/Elite UI slices long command labels by byte
+    offset; accented letters are transliterated instead of dropped.
+    """
+    cleaned = " ".join(re.sub(r"[^A-Za-z0-9 _.+-]", "", _transliterate_ascii(label)).split())
+    base = f"{prefix} {cleaned}".strip()[:44].rstrip()
     name, suffix = base, 2
     while name.lower() in taken:
         name = f"{base} {suffix}"
@@ -582,10 +619,10 @@ def build_device_set(
         base = clean_label(entity.name) or entity.entity_id
         name = base
         if name.lower() in taken:
-            name = clean_label(f"{base} (HA)")
+            name = clean_label(f"{clean_label(base, MAX_NAME - 5)} (HA)")
         suffix = 2
         while name.lower() in used or name.lower() in taken:
-            name = clean_label(f"{base[: MAX_NAME - 8]} {suffix}")
+            name = clean_label(f"{clean_label(base, MAX_NAME - 8)} {suffix}")
             suffix += 1
         before = previous.get(entity.entity_id)
         spec = device_spec(entity, name) if entity.available else None
@@ -726,8 +763,8 @@ def merge_device(
         if previous and previous.get("entity") == entity.entity_id:
             actions += v1_actions
         # The alias must fit the hub's 64-char alias limit and every
-        # "<alias>:<action>" value the entity contributes must fit 96 chars.
-        if len(alias) > 64 or any(len(f"{alias}:{action}") > MAX_VALUE for action in actions):
+        # "<alias>:<action>" value the entity contributes must fit 96 UTF-8 bytes.
+        if len(alias) > 64 or any(len(f"{alias}:{action}".encode("utf-8")) > MAX_VALUE for action in actions):
             alias = _short_alias(entity.entity_id)
             entities_table[-1]["alias"] = alias
         if not entity.available:
@@ -735,8 +772,11 @@ def merge_device(
         for name, action in names:
             if name.lower() in seen or name.lower() in disabled:
                 continue
+            value = f"{alias}:{action}"
+            if not _value_ok(value):
+                continue
             seen.add(name.lower())
-            commands.append((name, f"{alias}:{action}"))
+            commands.append((name, value))
         if entity_power and power is None:
             on = next((n for n, _ in commands if n == entity_power.get("on")), None)
             off = next((n for n, _ in commands if n == entity_power.get("off")), None)
@@ -766,11 +806,18 @@ def merge_device(
             )
         commands = commands[:MAX_COMMANDS]
     # The hub caps each merged device at MAX_ENTITIES (32) entries in entities.
-    # Keep every entity referenced by a command first, then fill up to the cap.
+    # Keep every entity referenced by a command and the device's own key entity
+    # first, then fill up to the cap.
     if len(entities_table) > MAX_ENTITIES:
         used_aliases = {value.partition(":")[0] for _, value in commands}
-        prioritized = [item for item in entities_table if item["alias"] in used_aliases]
-        others = [item for item in entities_table if item["alias"] not in used_aliases]
+        prioritized = [
+            item for item in entities_table
+            if item["alias"] in used_aliases or item["entity"] == key
+        ]
+        others = [
+            item for item in entities_table
+            if item["alias"] not in used_aliases and item["entity"] != key
+        ]
         entities_table = (prioritized + others)[:MAX_ENTITIES]
         kept_aliases = {item["alias"] for item in entities_table}
         commands = [(n, v) for n, v in commands if v.partition(":")[0] in kept_aliases]
@@ -842,7 +889,8 @@ def merge_device(
 
 def _device_name_key(name: str) -> str:
     """A comparable device name: case, punctuation and [brand] tags removed."""
-    text = re.sub(r"\[[^\]]*\]", " ", str(name or "").lower())
+    text = _transliterate_ascii(str(name or "")).lower()
+    text = re.sub(r"\[[^\]]*\]", " ", text)
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return " ".join(text.split())
 
@@ -890,6 +938,26 @@ def suppress_cast_twins(groups: list[DeviceGroup]) -> tuple[list[DeviceGroup], l
     return kept, suppressed
 
 
+def _previous_for_group(group: DeviceGroup, previous: dict[str, dict]) -> dict | None:
+    """Find a group's earlier spec in `previous` by entity ID or short alias."""
+    for entity in sorted(group.entities, key=lambda e: e.entity_id):
+        if entity.entity_id in previous:
+            return previous[entity.entity_id]
+    short_aliases = {
+        _short_alias(e.entity_id) for e in group.entities if _ENTITY_RE.match(e.entity_id)
+    }
+    if short_aliases:
+        seen_ids: set[int] = set()
+        for spec in previous.values():
+            if id(spec) in seen_ids or not spec.get("key"):
+                continue
+            seen_ids.add(id(spec))
+            for command in spec.get("commands") or []:
+                if _v2_command_alias(command.get("value", "")) in short_aliases:
+                    return spec
+    return None
+
+
 def build_merged_set(
     webhook: str,
     groups: list[DeviceGroup],
@@ -914,38 +982,30 @@ def build_merged_set(
         base = clean_label(group.name) or keys.get(group.device_id, group.device_id)
         name = base
         if name.lower() in taken:
-            name = clean_label(f"{base} (HA)")
+            name = clean_label(f"{clean_label(base, MAX_NAME - 5)} (HA)")
         suffix = 2
         while name.lower() in used or name.lower() in taken:
-            name = clean_label(f"{base[: MAX_NAME - 8]} {suffix}")
+            name = clean_label(f"{clean_label(base, MAX_NAME - 8)} {suffix}")
             suffix += 1
         key = keys.get(group.device_id)
         if not key:
-            before = None
-            for entity in sorted(group.entities, key=lambda e: e.entity_id):
-                if entity.entity_id in previous:
-                    before = previous[entity.entity_id]
-                    break
-            supported_key = next(
-                (e.entity_id for e in group.entities
-                 if e.domain in SUPPORTED_DOMAINS and _ENTITY_RE.match(e.entity_id)),
-                None,
-            )
+            before = _previous_for_group(group, previous)
+            supported = [
+                e for e in group.entities
+                if e.domain in SUPPORTED_DOMAINS and _ENTITY_RE.match(e.entity_id)
+            ]
+            supported_key = min(supported, key=_entity_priority).entity_id if supported else None
             key = before.get("key", before.get("entity")) if before else (
                 supported_key or (group.entities[0].entity_id if group.entities else group.device_id)
             )
-        before = previous.get(key)
-        if before is None:
-            for entity in group.entities:
-                if entity.entity_id in previous:
-                    before = previous[entity.entity_id]
-                    break
+        before = previous.get(key) or _previous_for_group(group, previous)
         named = DeviceGroup(group.device_id, name, group.manufacturer, group.model, group.entities)
         spec = merge_device(named, key, before, disabled.get(group.device_id), warnings)
         if spec:
             used.add(name.lower())
             devices.append(spec)
-        elif before:
+        elif before and (not before.get("key") or before.get("entities")):
+            used.add(name.lower())
             devices.append(dict(before, name=name))
     return {"webhook": webhook, "devices": devices}, suppressed
 
