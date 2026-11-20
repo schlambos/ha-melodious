@@ -214,16 +214,16 @@ class MelodiousRuntime:
         return groups
 
     def _previous(self) -> dict[str, dict]:
-        """The last sent set indexed by key and by entity."""
+        """The last sent set indexed by key and by entity, plus retained hub seeds."""
         previous: dict[str, dict] = {}
-        source = self.sent or self._hub_seed
-        for device in (source or {}).get("devices", []):
-            if device.get("key"):
-                previous[device["key"]] = device
-                for item in device.get("entities", []):
-                    previous.setdefault(item["entity"], device)
-            elif device.get("entity"):
-                previous[device["entity"]] = device
+        for source in (self.sent, self._hub_seed):
+            for device in (source or {}).get("devices", []):
+                if device.get("key"):
+                    previous.setdefault(device["key"], device)
+                    for item in device.get("entities", []):
+                        previous.setdefault(item["entity"], device)
+                elif device.get("entity"):
+                    previous.setdefault(device["entity"], device)
         return previous
 
     def _device_keys(self) -> dict[str, str]:
@@ -319,11 +319,42 @@ class MelodiousRuntime:
                 _LOGGER.warning("Could not update the hub's devices, trying again in %ss: %s", RETRY_SECONDS, err)
                 self._timer = async_call_later(self.hass, RETRY_SECONDS, self._timer_fired)
                 return
+            prev_devices = (self.sent or {}).get("devices", []) + (self._hub_seed or {}).get("devices", [])
             self.sent = device_set
             self._refused = None
             self.allowed = allowed_values(device_set)
             await self.store.async_save(device_set)
             persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{self.entry.entry_id}")
+            retained = [item for item in (result.get("retained") or []) if isinstance(item, dict)]
+            retained_id = f"{DOMAIN}_{self.entry.entry_id}_retained"
+            if retained:
+                retained_names = {str(item.get("name", "")).lower() for item in retained}
+                kept_seeds: list[dict] = []
+                seen_keys: set[str] = set()
+                for device in prev_devices:
+                    dkey = str(device.get("key") or device.get("entity") or "")
+                    if dkey and dkey not in seen_keys and str(device.get("name", "")).lower() in retained_names:
+                        seen_keys.add(dkey)
+                        kept_seeds.append(device)
+                self._hub_seed = {"devices": kept_seeds} if kept_seeds else None
+                parts = []
+                for item in retained:
+                    name = str(item.get("name") or item.get("deviceId") or "unknown")
+                    where = ", ".join(str(w) for w in (item.get("usedBy") or []) if w)
+                    parts.append(f"{name} ({where})" if where else name)
+                summary = ", ".join(parts)
+                _LOGGER.warning("Hub kept Home Assistant device(s) still in use: %s", summary)
+                persistent_notification.async_create(
+                    self.hass,
+                    f"Other Home Assistant devices were synced, but the hub kept devices still "
+                    f"used by activities or buttons: {summary}. Remove them from their activities "
+                    f"and buttons on the hub to delete them.",
+                    title="Melodious",
+                    notification_id=retained_id,
+                )
+            else:
+                self._hub_seed = None
+                persistent_notification.async_dismiss(self.hass, retained_id)
             if result.get("changed"):
                 _LOGGER.info(
                     "Hub devices: added %s, updated %s, removed %s",

@@ -68,9 +68,11 @@ def assert_hub_accepts_mixed(test, device_set):
         test.assertNotIn(key, keys, f"{key} listed twice")
         keys.add(key)
         test.assertNotIn(d["name"].lower(), names, f"two devices named {d['name']}")
+        test.assertTrue(0 < len(d["name"].encode("utf-8")) <= 64, d["name"])
+        test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\]', d["name"]), d["name"])
         names.add(d["name"].lower())
         if "model" in d and d["model"] is not None:
-            test.assertTrue(0 < len(d["model"]) <= 64, d["model"])
+            test.assertTrue(0 < len(d["model"].encode("utf-8")) <= 64, d["model"])
             test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\]', d["model"]), d["model"])
         if d.get("key") or d.get("entities") is not None:
             test.assertTrue(1 <= len(d["entities"]) <= 32, len(d["entities"]))
@@ -89,7 +91,9 @@ def assert_hub_accepts_mixed(test, device_set):
             entities.add(entity_id)
         test.assertTrue(0 < len(d["commands"]) <= devices.MAX_COMMANDS)
         for c in d["commands"]:
-            test.assertTrue(0 < len(c["value"]) <= devices.MAX_VALUE, c)
+            test.assertRegex(c["name"], r"^[A-Za-z0-9][A-Za-z0-9 _.+\-]*$", c["name"])
+            test.assertLessEqual(len(c["name"].encode("utf-8")), 48, c["name"])
+            test.assertTrue(0 < len(c["value"].encode("utf-8")) <= devices.MAX_VALUE, c)
             test.assertFalse(re.search(r'[\x00-\x1f\x7f"\\%{}]', c["value"]), c)
 
 
@@ -305,6 +309,137 @@ class CombinedSetTests(unittest.TestCase):
         self.assertEqual(values["BrightnessUp"], "light.hue_living_room:brightness_up")
         self.assertEqual(values["Activate"], "scene.hue_relax:turn_on")
         self.assertFalse(any(v.count(":") > 1 for v in values.values()), values)
+
+    def test_hue_room_key_prefers_light_regardless_of_registry_order(self):
+        # A Hue room's entity registry order can put scenes or unsupported
+        # remotes ahead of light.salon. Picking by entity priority keeps the
+        # room's key anchored on light.salon across scene edits or reorders.
+        members_scene_first = [
+            Entity("scene.salon_detente", "Salon Détente", True),
+            Entity("scene.salon_lecture", "Salon Lecture", True),
+            Entity("remote.salon_unknown", "Salon Remote", True),
+            Entity("light.salon", "Salon", True, 0, {"supported_color_modes": ["xy"]}),
+        ]
+        members_light_first = list(reversed(members_scene_first))
+        set_a, _ = combined([devices.DeviceGroup("dev_salon", "Salon", entities=members_scene_first)], [script()])
+        set_b, _ = combined([devices.DeviceGroup("dev_salon", "Salon", entities=members_light_first)], [script()])
+        key_a = next(d["key"] for d in set_a["devices"] if d.get("key"))
+        key_b = next(d["key"] for d in set_b["devices"] if d.get("key"))
+        self.assertEqual(key_a, "light.salon")
+        self.assertEqual(key_b, "light.salon")
+        assert_hub_accepts_mixed(self, set_a)
+
+    def test_hue_room_upgrade_preserves_existing_key_entity_under_32_cap(self):
+        # An existing Hue room pushed under v0.7.2 may have its hub key set to
+        # a scene beyond the alphabetical 32-entity cap. Upgrading must keep
+        # that key AND keep that entity inside entities so the hub matches it.
+        key_scene = "scene.salon_z_detente"
+        previous = previous_by_key_and_entity({"devices": [{
+            "key": key_scene,
+            "name": "Salon",
+            "entities": [
+                {"alias": "light.salon", "entity": "light.salon"},
+                {"alias": key_scene, "entity": key_scene},
+            ],
+            "commands": [
+                {"name": "PowerOn", "value": "light.salon:turn_on"},
+                {"name": "PowerOff", "value": "light.salon:turn_off"},
+                {"name": "Activate", "value": "scene.salon_00:turn_on"},
+            ],
+        }]})
+        members = [
+            Entity("light.salon", "Salon", True, 0, {"supported_color_modes": ["xy"]}),
+            *[Entity(f"scene.salon_{i:02d}", f"Scène {i}", True) for i in range(36)],
+            Entity(key_scene, "Salon Détente", True),
+        ]
+        salon = devices.DeviceGroup("dev_salon", "Salon", entities=members)
+        device_set, _ = combined([salon], [script()], previous=previous)
+        assert_hub_accepts_mixed(self, device_set)
+        merged = next(d for d in device_set["devices"] if d.get("key"))
+        self.assertEqual(merged["key"], key_scene)
+        self.assertIn(key_scene, {item["entity"] for item in merged["entities"]})
+
+    def test_key_entity_survives_32_entity_cap_with_32_other_active_contributors(self):
+        # Reviewer finding: when 33 selects each contribute a distinct option
+        # and the prior key is the 33rd (select.s32), reserving the key slot
+        # must keep select.s32 inside the 32-entity cap whether it is available
+        # or temporarily unavailable.
+        key_entity = "select.s32"
+        previous = previous_by_key_and_entity({"devices": [{
+            "key": key_entity,
+            "name": "Sources",
+            "entities": [{"alias": key_entity, "entity": key_entity}],
+            "commands": [{"name": "Input Opt 32", "value": f"{key_entity}:select_option:Opt 32"}],
+        }]})
+        for key_available in (True, False):
+            members = [
+                Entity(f"select.s{i:02d}", f"S{i}", True if i < 32 else key_available,
+                       0, {"options": [f"Opt {i:02d}"]})
+                for i in range(33)
+            ]
+            group = devices.DeviceGroup("dev_sources", "Sources", entities=members)
+            device_set, _ = combined([group], [], previous=previous)
+            assert_hub_accepts_mixed(self, device_set)
+            merged = next(d for d in device_set["devices"] if d.get("key"))
+            self.assertEqual(merged["key"], key_entity, f"available={key_available}")
+            self.assertEqual(len(merged["entities"]), 32, f"available={key_available}")
+            self.assertIn(key_entity, {item["entity"] for item in merged["entities"]},
+                          f"available={key_available}")
+
+    def test_recreated_hub_seed_matches_short_aliased_v2_device(self):
+        # If a v2 device on the hub had commands using a short alias (for a
+        # >64-char entity ID) and a legacy key, hub_ha_devices() cannot spell
+        # the long entity ID from the alias alone; build_merged_set must still
+        # match via _short_alias so the hub key does not drift on recreate.
+        long_light = "light." + "salon_plafonnier_principal_couleur_ambiance_" + "a" * 30
+        alias = devices._short_alias(long_light)
+        config = {"deviceList": {"DevicesWithFeatures": [{
+            "Device": {
+                "Name": "Salon",
+                "AutoDetectedDevice": {"Id": "melodious-ha-1"},
+                "Tokens": {"Parameters": [{"Key": "{d}", "Value": "scene.salon_legacy_key"}]},
+            },
+            "Commands": [
+                {"Name": "PowerOn", "Parameters": [{"Key": "{c}", "Value": f"{alias}:turn_on"}]},
+                {"Name": "PowerOff", "Parameters": [{"Key": "{c}", "Value": f"{alias}:turn_off"}]},
+            ],
+        }]}}
+        seeded = devices.hub_ha_devices(config)
+        previous = previous_by_key_and_entity({"devices": seeded})
+        salon = devices.DeviceGroup("dev_salon", "Salon", entities=[
+            Entity(long_light, "Salon", True, 0, {"supported_color_modes": ["xy"]}),
+        ])
+        device_set, _ = combined([salon], [script()], previous=previous)
+        assert_hub_accepts_mixed(self, device_set)
+        merged = next(d for d in device_set["devices"] if d.get("key"))
+        self.assertEqual(merged["key"], "scene.salon_legacy_key")
+
+    def test_unavailable_device_does_not_emit_empty_entities_or_collide_name(self):
+        # An incomplete hub seed (entities: []) when all entities are offline
+        # must not be emitted as an invalid v2 payload; a valid fallback keeps
+        # its name reserved against subsequent devices.
+        incomplete_prev = {
+            "light.offline": {
+                "key": "light.offline", "name": "Salon", "entities": [],
+                "commands": [{"name": "PowerOn", "value": "e12345678:turn_on"}],
+            },
+            "light.down": {
+                "key": "light.down", "name": "Bureau",
+                "entities": [{"alias": "light.down", "entity": "light.down"}],
+                "commands": [{"name": "PowerOn", "value": "light.down:turn_on"}],
+            },
+        }
+        groups = [
+            devices.DeviceGroup("d1", "Salon", entities=[Entity("light.offline", "Salon", False)]),
+            devices.DeviceGroup("d2", "Bureau", entities=[Entity("light.down", "Bureau", False)]),
+            devices.DeviceGroup("d3", "Bureau", entities=[Entity("light.bureau_2", "Bureau", True)]),
+        ]
+        device_set, _ = combined(groups, [], previous=incomplete_prev)
+        assert_hub_accepts_mixed(self, device_set)
+        keys = {d.get("key") for d in device_set["devices"]}
+        self.assertNotIn("light.offline", keys)
+        self.assertIn("light.down", keys)
+        self.assertIn("light.bureau_2", keys)
 
 
 class LegacyFlattenTests(unittest.TestCase):
