@@ -220,24 +220,127 @@ def _is_input_source(label: str) -> bool:
     return False
 
 
+def _is_dynamic_action(value: str) -> bool:
+    """True when a command value selects a label-derived option, source, or app."""
+    action = value.partition(":")[2] if _v2_command_alias(value) else value
+    return action.startswith(("select_option:", "select_source:", "turn_on:"))
+
+
 def _merge(current: dict, previous: dict | None) -> dict:
     """The current device plus any command or input the previous one had.
 
     Many players drop their source list (or features) while off, so a device
     rebuilt then would lose commands an activity uses, and every power cycle
     would rewrite the hub's DeviceList and make the Touch sync.
+
+    Existing name->value pairs in `previous` are reserved before assigning
+    new names so an upgrade (such as transliterating "Détente" alongside
+    "Detente") never silently changes which option an existing button runs,
+    including under the MAX_COMMANDS cap.
     """
     if not previous:
         return current
     merged = dict(current)
-    names = {c["name"].lower() for c in current["commands"]}
-    extra = [c for c in previous.get("commands", []) if c["name"].lower() not in names]
-    merged["commands"] = (current["commands"] + extra)[:MAX_COMMANDS]
-    kept = {c["name"] for c in merged["commands"]}
-    inputs = list(current.get("inputs", []))
-    seen = {i["name"].lower() for i in inputs}
+    prev_commands = list(previous.get("commands", []))
+    curr_commands = list(current.get("commands", []))
+    curr_by_name = {c["name"].lower(): c for c in curr_commands}
+
+    reserved_by_name: dict[str, dict] = {}
+    for prev in prev_commands:
+        key = prev["name"].lower()
+        curr = curr_by_name.get(key)
+        if (
+            curr is not None
+            and curr["value"] != prev["value"]
+            and not (_is_dynamic_action(prev["value"]) and _is_dynamic_action(curr["value"]))
+        ):
+            reserved_by_name[key] = curr
+        else:
+            reserved_by_name[key] = prev
+
+    reserved: list[dict] = []
+    placed: set[str] = set()
+    for curr in curr_commands:
+        key = curr["name"].lower()
+        existing = reserved_by_name.get(key)
+        if existing is not None and existing["value"] == curr["value"] and key not in placed:
+            reserved.append(existing)
+            placed.add(key)
+    for prev in prev_commands:
+        key = prev["name"].lower()
+        if key not in placed:
+            reserved.append(reserved_by_name[key])
+            placed.add(key)
+
+    by_name: dict[str, dict] = {c["name"].lower(): c for c in reserved}
+    reserved_by_value: dict[str, list[str]] = {}
+    for c in reserved:
+        reserved_by_value.setdefault(c["value"], []).append(c["name"])
+
+    added: list[dict] = []
+    name_remap: dict[str, str] = {}
+    for curr in curr_commands:
+        cname, cval = curr["name"], curr["value"]
+        key = cname.lower()
+        existing = by_name.get(key)
+        if existing is not None and existing["value"] == cval:
+            name_remap[cname] = existing["name"]
+            continue
+        base = re.sub(r" \d+$", "", cname)[:44].rstrip()
+        if base != cname and cval in reserved_by_value:
+            match = next((n for n in reserved_by_value[cval] if n.lower() == base.lower()), None)
+            if match is not None:
+                name_remap[cname] = match
+                continue
+        if existing is None:
+            added.append(curr)
+            by_name[key] = curr
+            name_remap[cname] = cname
+            continue
+        if cval in reserved_by_value:
+            reuse = next(
+                (n for n in reserved_by_value[cval]
+                 if n.lower() == base.lower() or n.lower().startswith(base.lower() + " ")),
+                None,
+            )
+            if reuse is not None:
+                name_remap[cname] = reuse
+                continue
+        suffix = 2
+        while True:
+            cand = f"{base} {suffix}"
+            ckey = cand.lower()
+            holder = by_name.get(ckey)
+            if holder is None:
+                new_cmd = {"name": cand, "value": cval}
+                added.append(new_cmd)
+                by_name[ckey] = new_cmd
+                name_remap[cname] = cand
+                break
+            if holder["value"] == cval:
+                name_remap[cname] = holder["name"]
+                break
+            suffix += 1
+
+    merged["commands"] = (reserved + added)[:MAX_COMMANDS]
+    kept_by_name = {c["name"]: c["value"] for c in merged["commands"]}
+    kept_by_value: dict[str, str] = {}
+    for c in merged["commands"]:
+        kept_by_value.setdefault(c["value"], c["name"])
+    curr_value_by_name = {c["name"]: c["value"] for c in curr_commands}
+
+    inputs: list[dict] = []
+    seen: set[str] = set()
+    for item in current.get("inputs", []):
+        cmd_name = name_remap.get(item["command"], item["command"])
+        if cmd_name not in kept_by_name:
+            orig_val = curr_value_by_name.get(item["command"])
+            cmd_name = kept_by_value.get(orig_val) if orig_val else None
+        if cmd_name and item["name"].lower() not in seen and len(inputs) < MAX_INPUTS:
+            inputs.append(dict(item, command=cmd_name))
+            seen.add(item["name"].lower())
     for item in previous.get("inputs", []):
-        if item["name"].lower() not in seen and item["command"] in kept and len(inputs) < MAX_INPUTS:
+        if item["name"].lower() not in seen and item["command"] in kept_by_name and len(inputs) < MAX_INPUTS:
             inputs.append(item)
             seen.add(item["name"].lower())
     if inputs:
@@ -810,15 +913,16 @@ def merge_device(
     # first, then fill up to the cap.
     if len(entities_table) > MAX_ENTITIES:
         used_aliases = {value.partition(":")[0] for _, value in commands}
-        prioritized = [
+        key_entries = [item for item in entities_table if item["entity"] == key]
+        used_entries = [
             item for item in entities_table
-            if item["alias"] in used_aliases or item["entity"] == key
+            if item["entity"] != key and item["alias"] in used_aliases
         ]
         others = [
             item for item in entities_table
-            if item["alias"] not in used_aliases and item["entity"] != key
+            if item["entity"] != key and item["alias"] not in used_aliases
         ]
-        entities_table = (prioritized + others)[:MAX_ENTITIES]
+        entities_table = (key_entries + used_entries + others)[:MAX_ENTITIES]
         kept_aliases = {item["alias"] for item in entities_table}
         commands = [(n, v) for n, v in commands if v.partition(":")[0] in kept_aliases]
         if not commands:

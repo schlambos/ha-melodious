@@ -793,6 +793,73 @@ class SelectTests(unittest.TestCase):
         self.assertEqual(spec["inputs"], [{"name": "Détente", "command": "Input Detente"}])
         assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
 
+    def test_ambiguous_accent_upgrade_preserves_existing_name_to_action_mapping(self):
+        # Reviewer finding: when both "Détente" and "Detente" existed before
+        # transliteration, main mapped "Input Dtente" -> "Détente" and
+        # "Input Detente" -> "Detente". Upgrading must NOT reassign
+        # "Input Detente" to "Détente".
+        old = {
+            "key": "select.salon_scene",
+            "name": "Salon",
+            "entities": [{"alias": "select.salon_scene", "entity": "select.salon_scene"}],
+            "commands": [
+                {"name": "Input Dtente", "value": "select.salon_scene:select_option:Détente"},
+                {"name": "Input Detente", "value": "select.salon_scene:select_option:Detente"},
+            ],
+            "inputs": [
+                {"name": "Détente", "command": "Input Dtente"},
+                {"name": "Detente", "command": "Input Detente"},
+            ],
+        }
+        entity = Entity("select.salon_scene", "Salon", True, 0, {"options": ["Détente", "Detente"]})
+        spec, _ = merged_spec([entity], name="Salon", device_id="salon",
+                              previous={"select.salon_scene": old})
+        values = {c["name"]: c["value"] for c in spec["commands"]}
+        self.assertEqual(values["Input Detente"], "select.salon_scene:select_option:Detente")
+        self.assertEqual(values["Input Dtente"], "select.salon_scene:select_option:Détente")
+        inputs_by_name = {i["name"]: i["command"] for i in spec["inputs"]}
+        self.assertEqual(values[inputs_by_name["Detente"]], "select.salon_scene:select_option:Detente")
+        self.assertEqual(values[inputs_by_name["Détente"]], "select.salon_scene:select_option:Détente")
+        self.assertEqual(inputs_by_name["Detente"], "Input Detente")
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+        # Repeat push must be idempotent (no extra suffixed commands created).
+        again, _ = merged_spec([entity], name="Salon", device_id="salon",
+                               previous={"select.salon_scene": spec})
+        self.assertEqual(again["commands"], spec["commands"])
+        self.assertEqual(again["inputs"], spec["inputs"])
+
+    def test_ambiguous_accent_upgrade_under_command_cap_preserves_existing_mappings(self):
+        # Under the 128-command cap, existing name->value pairs from previous
+        # must stay reserved and not be evicted or reassigned by newly
+        # transliterated command names.
+        alias = "select.salon_scene"
+        filler = [{"name": f"Input Slot {i:03d}", "value": f"{alias}:select_option:Slot {i:03d}"}
+                  for i in range(devices.MAX_COMMANDS - 2)]
+        old = {
+            "key": alias,
+            "name": "Salon",
+            "entities": [{"alias": alias, "entity": alias}],
+            "commands": filler + [
+                {"name": "Input Dtente", "value": f"{alias}:select_option:Détente"},
+                {"name": "Input Detente", "value": f"{alias}:select_option:Detente"},
+            ],
+            "inputs": [
+                {"name": "Détente", "command": "Input Dtente"},
+                {"name": "Detente", "command": "Input Detente"},
+            ],
+        }
+        entity = Entity(alias, "Salon", True, 0, {"options": ["Détente", "Detente"]})
+        spec, _ = merged_spec([entity], name="Salon", device_id="salon",
+                              previous={alias: old})
+        self.assertEqual(len(spec["commands"]), devices.MAX_COMMANDS)
+        values = {c["name"]: c["value"] for c in spec["commands"]}
+        self.assertEqual(values["Input Detente"], f"{alias}:select_option:Detente")
+        self.assertEqual(values["Input Dtente"], f"{alias}:select_option:Détente")
+        inputs_by_name = {i["name"]: i["command"] for i in spec["inputs"]}
+        self.assertEqual(values[inputs_by_name["Detente"]], f"{alias}:select_option:Detente")
+        self.assertEqual(values[inputs_by_name["Détente"]], f"{alias}:select_option:Détente")
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
 
 class Utf8LimitsTests(unittest.TestCase):
     def test_clean_label_truncates_by_utf8_bytes_without_splitting_characters(self):

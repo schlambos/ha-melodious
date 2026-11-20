@@ -359,6 +359,33 @@ class CombinedSetTests(unittest.TestCase):
         self.assertEqual(merged["key"], key_scene)
         self.assertIn(key_scene, {item["entity"] for item in merged["entities"]})
 
+    def test_key_entity_survives_32_entity_cap_with_32_other_active_contributors(self):
+        # Reviewer finding: when 33 selects each contribute a distinct option
+        # and the prior key is the 33rd (select.s32), reserving the key slot
+        # must keep select.s32 inside the 32-entity cap whether it is available
+        # or temporarily unavailable.
+        key_entity = "select.s32"
+        previous = previous_by_key_and_entity({"devices": [{
+            "key": key_entity,
+            "name": "Sources",
+            "entities": [{"alias": key_entity, "entity": key_entity}],
+            "commands": [{"name": "Input Opt 32", "value": f"{key_entity}:select_option:Opt 32"}],
+        }]})
+        for key_available in (True, False):
+            members = [
+                Entity(f"select.s{i:02d}", f"S{i}", True if i < 32 else key_available,
+                       0, {"options": [f"Opt {i:02d}"]})
+                for i in range(33)
+            ]
+            group = devices.DeviceGroup("dev_sources", "Sources", entities=members)
+            device_set, _ = combined([group], [], previous=previous)
+            assert_hub_accepts_mixed(self, device_set)
+            merged = next(d for d in device_set["devices"] if d.get("key"))
+            self.assertEqual(merged["key"], key_entity, f"available={key_available}")
+            self.assertEqual(len(merged["entities"]), 32, f"available={key_available}")
+            self.assertIn(key_entity, {item["entity"] for item in merged["entities"]},
+                          f"available={key_available}")
+
     def test_recreated_hub_seed_matches_short_aliased_v2_device(self):
         # If a v2 device on the hub had commands using a short alias (for a
         # >64-char entity ID) and a legacy key, hub_ha_devices() cannot spell
