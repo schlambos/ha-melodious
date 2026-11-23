@@ -23,7 +23,7 @@ It also works the other way round: the hub appears in Home Assistant as a `remot
 
 ## Merged devices
 
-A whole Home Assistant device becomes **one** Harmony device. Its entities are merged with a profile keyed on the entity registry's integration (`webostv`, `androidtv_remote`, `androidtv`, `cast`, …), not on the entity ID. The first command wins each canonical name, and a same-named Cast twin is suppressed before the merge.
+A whole Home Assistant device becomes **one** Harmony device. Its entities are merged with a profile keyed on the entity registry's integration (`webostv`, `androidtv_remote`, `androidtv`, `cast`, …), not on the entity ID. The first command wins each canonical name, and a same-named Cast twin is suppressed before the merge. Single entities picked beside whole devices are pushed as their own devices too; a single entity that is already inside a merged device is not sent twice (the hub refuses one entity in two devices).
 
 ### LG webOS TV
 
@@ -103,10 +103,11 @@ If you previously added the Cast twin as its own entity device, remove it from a
 
 - **When it updates the hub:** the device list goes to the hub on every start, when the options change, and when an entity's device would change. The hub saves nothing for an unchanged list.
 - **A device keeps every command and input it had**, so a player that's switched off never loses inputs that an activity uses. A v1 entity device migrating to a merged device keeps its old commands, now routed through the entity alias.
-- **Limits:** 128 commands and 32 inputs per device. Apps are last, so a 128-command trim drops apps first and reports the reason in the review step and the log. True inputs are preferred over apps.
+- **Limits:** 64 devices per push (merged devices claim slots before single entities), 32 entities per merged device, and 128 commands and 32 inputs per device. Apps are last, so a 128-command trim drops apps first and reports the reason in the review step and the log. True inputs are preferred over apps.
 - **Long values:** a value must fit 96 characters. A long entity ID or a long app name makes the builder use a stable short alias (`e<8hex>`) for that entity.
+- **Accented names:** command and device names sent to the hub are transliterated to plain ASCII (`Input Détente` becomes `Input Detente`), so they survive the hub's name rules. An upgrade never repoints an existing button: a name the hub already has keeps the action it already runs.
 - **On a Harmony Touch, each device gets its own screen**: Devices, then the device. The hub builds it from the device's commands. A command named like a hard key goes on that key (VolumeUp, Mute, Play, Menu, Back, Select…), and every other command is an on-screen button. The screen follows the device when its commands change. This needs a Melodious hub with Touch device screens (`POST /api/device-screen`); an older hub adds the device without a screen.
-- **Unticking an entity or device** in Configure takes its device and its Touch screen off the hub, unless an activity or button still uses it.
+- **Unticking an entity or device** in Configure takes its device and its Touch screen off the hub, unless an activity or button still uses it. In that case the rest of the sync still goes through, the hub keeps the device, and Home Assistant shows a persistent notification naming each kept device and what still uses it; remove it from its activities and buttons on the hub, and the next push deletes it (and clears the notification).
 - **Removing the integration** leaves the hub's devices where they are, so re-adding it picks up where it left off. Untick everything in Configure first if you want them gone.
 
 ## The hub as a remote
