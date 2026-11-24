@@ -733,6 +733,43 @@ class SelectTests(unittest.TestCase):
         self.assertNotIn("power", spec)
         assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
 
+    def test_options_past_the_input_cap_stay_commands(self):
+        # Issue #24: the hub allows 32 inputs but 128 commands, so options
+        # past the 32nd stay usable as plain commands instead of vanishing.
+        options = [f"Scene {n}" for n in range(1, 91)]
+        entity = Entity("select.scenes", "Scenes", True, 0,
+                        {"options": options}, platform="template")
+        spec, _ = merged_spec([entity], name="Scenes", device_id="scenes")
+        self.assertEqual([i["name"] for i in spec["inputs"]], options[:32])
+        self.assertEqual(
+            [c["value"] for c in spec["commands"]],
+            [f"select.scenes:select_option:{option}" for option in options],
+        )
+        for item in spec["inputs"]:
+            self.assertIn(item["command"], {c["name"] for c in spec["commands"]})
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
+    def test_options_stop_at_the_command_cap(self):
+        options = [f"Scene {n}" for n in range(1, 201)]
+        entity = Entity("select.scenes", "Scenes", True, 0,
+                        {"options": options}, platform="template")
+        spec, _ = merged_spec([entity], name="Scenes", device_id="scenes")
+        self.assertEqual(len(spec["commands"]), devices.MAX_COMMANDS)
+        self.assertEqual(len(spec["inputs"]), devices.MAX_INPUTS)
+        assert_hub_accepts_v2(self, {"webhook": WEBHOOK, "devices": [spec]})
+
+    def test_sources_past_the_input_cap_stay_commands(self):
+        # The legacy media_player source list had the same #24 cap mix-up.
+        sources = [f"Source {n}" for n in range(1, 41)]
+        entity = mp(source_list=sources)
+        device_set = devices.build_device_set(WEBHOOK, [entity], {}, set())
+        spec = device_set["devices"][0]
+        self.assertEqual([i["name"] for i in spec["inputs"]], sources[:32])
+        values = {c["value"] for c in spec["commands"]}
+        for source in sources:
+            self.assertIn(f"select_source:{source}", values)
+        assert_hub_accepts(self, device_set)
+
     def test_unsafe_options_are_skipped(self):
         entity = Entity("select.avr", "AVR", True, 0,
                         {"options": ['HDMI "1"', "100%", "HDMI 2"]})

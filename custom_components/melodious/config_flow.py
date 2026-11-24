@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -29,6 +30,8 @@ from .devices import SUPPORTED_DOMAINS
 from .hub import HubError, HubRefused
 from .mirror import mirror_picker_options
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class MelodiousConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -37,8 +40,8 @@ class MelodiousConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         placeholders = {"error": ""}
         if user_input is not None:
-            data = {**user_input, CONF_HOST: user_input[CONF_HOST].strip()}
-            data[CONF_HA_URL] = user_input[CONF_HA_URL].strip().rstrip("/")
+            data = {**user_input, CONF_HOST: str(user_input.get(CONF_HOST) or "").strip()}
+            data[CONF_HA_URL] = str(user_input.get(CONF_HA_URL) or "").strip().rstrip("/")
             await self.async_set_unique_id(data[CONF_HOST])
             self._abort_if_unique_id_configured()
             # The hub can't verify Let's Encrypt certificates.
@@ -53,6 +56,13 @@ class MelodiousConfigFlow(ConfigFlow, domain=DOMAIN):
                 except HubError as err:
                     errors["base"] = "cannot_connect"
                     placeholders["error"] = str(err)
+                except Exception as err:
+                    # First contact with a hub must never surface as Home
+                    # Assistant's "Unknown error occurred" (#23): whatever
+                    # went wrong, name it in the form so it can be reported.
+                    _LOGGER.exception("Unexpected error talking to the hub")
+                    errors["base"] = "cannot_connect"
+                    placeholders["error"] = str(err) or err.__class__.__name__
             if not errors:
                 return self.async_create_entry(
                     title=f"Melodious hub {data[CONF_HOST]}",
