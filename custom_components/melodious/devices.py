@@ -383,12 +383,14 @@ def _legacy_commands_for(entity: Entity) -> tuple[list[tuple[str, str]], dict | 
                 # A source the hub can't carry exactly would select the wrong one.
                 if label != source or not _value_ok(value) or label.lower() in seen:
                     continue
-                if len(inputs) == MAX_INPUTS:
+                if len(commands) >= MAX_COMMANDS:
                     break
                 seen.add(label.lower())
                 name = input_command_name(label, {n.lower() for n, _ in commands})
                 add(name, value)
-                inputs.append({"name": label, "command": name})
+                # Past 32 inputs a source stays a plain command (see above).
+                if len(inputs) < MAX_INPUTS:
+                    inputs.append({"name": label, "command": name})
     elif domain in ("light", "switch", "input_boolean", "fan"):
         add("PowerOn", "turn_on")
         add("PowerOff", "turn_off")
@@ -644,13 +646,16 @@ def _select_commands(entity: Entity) -> tuple[list[tuple[str, str]], dict | None
         value = f"select_option:{option}"
         if not label or label != option or not _value_ok(value) or label.lower() in seen:
             continue
-        if len(inputs) >= MAX_INPUTS:
+        if len(commands) >= MAX_COMMANDS:
             break
         seen.add(label.lower())
         name = input_command_name(label, taken)
         taken.add(name.lower())
         commands.append((name, value))
-        inputs.append({"name": label, "command": name})
+        # The hub allows 32 inputs but 128 commands: options past the 32nd
+        # stay usable as plain commands (activities, buttons, send_command).
+        if len(inputs) < MAX_INPUTS:
+            inputs.append({"name": label, "command": name})
     return commands, None, inputs
 
 
