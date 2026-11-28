@@ -258,14 +258,11 @@ def _merge(current: dict, previous: dict | None) -> dict:
         else:
             reserved_by_name[key] = prev
 
+    # Keep the previous order. Following the current one made a player whose
+    # features come and go with its input (denonavr transport keys) reorder
+    # an unchanged device, which was re-pushed and made the remote sync.
     reserved: list[dict] = []
     placed: set[str] = set()
-    for curr in curr_commands:
-        key = curr["name"].lower()
-        existing = reserved_by_name.get(key)
-        if existing is not None and existing["value"] == curr["value"] and key not in placed:
-            reserved.append(existing)
-            placed.add(key)
     for prev in prev_commands:
         key = prev["name"].lower()
         if key not in placed:
@@ -329,20 +326,31 @@ def _merge(current: dict, previous: dict | None) -> dict:
         kept_by_value.setdefault(c["value"], c["name"])
     curr_value_by_name = {c["name"]: c["value"] for c in curr_commands}
 
-    inputs: list[dict] = []
-    seen: set[str] = set()
+    curr_inputs: dict[str, dict] = {}
     for item in current.get("inputs", []):
         cmd_name = name_remap.get(item["command"], item["command"])
         if cmd_name not in kept_by_name:
             orig_val = curr_value_by_name.get(item["command"])
             cmd_name = kept_by_value.get(orig_val) if orig_val else None
-        if cmd_name and item["name"].lower() not in seen and len(inputs) < MAX_INPUTS:
-            inputs.append(dict(item, command=cmd_name))
-            seen.add(item["name"].lower())
+        if cmd_name:
+            curr_inputs.setdefault(item["name"].lower(), dict(item, command=cmd_name))
+
+    # Inputs keep the previous order too, taking the current entry where
+    # there is one; new inputs go at the end.
+    inputs: list[dict] = []
+    seen: set[str] = set()
     for item in previous.get("inputs", []):
-        if item["name"].lower() not in seen and item["command"] in kept_by_name and len(inputs) < MAX_INPUTS:
+        key = item["name"].lower()
+        if key in seen:
+            continue
+        chosen = curr_inputs.get(key) or (item if item["command"] in kept_by_name else None)
+        if chosen and len(inputs) < MAX_INPUTS:
+            inputs.append(chosen)
+            seen.add(key)
+    for key, item in curr_inputs.items():
+        if key not in seen and len(inputs) < MAX_INPUTS:
             inputs.append(item)
-            seen.add(item["name"].lower())
+            seen.add(key)
     if inputs:
         merged["inputs"] = inputs
     if "power" not in merged and previous.get("power"):
