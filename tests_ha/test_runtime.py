@@ -168,6 +168,47 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.async_push(force=True)
             self.assertEqual(client.commit.await_count, 2)
 
+    async def test_receiver_input_changes_do_not_recommit(self):
+        # HA#27: denonavr reports transport features only on a NET input. Each
+        # commit bumps the hub's configVersion and the remote syncs.
+        self.entry.data = {"ha_url": "http://ha", "webhook_id": "hook"}
+        client = self.runtime.client
+        client.device_names = AsyncMock(return_value=set())
+        client.ha_devices = AsyncMock(return_value=[])
+        client.features = AsyncMock(return_value={"ha-devices-v2"})
+        client.commit = AsyncMock(return_value={
+            "changed": True, "added": [], "updated": ["Home Theater"], "removed": []})
+        self.runtime.store.async_save = AsyncMock()
+        self.runtime.schedule_state_push = lambda immediate=False: None
+        self.runtime.entities = lambda: []
+        base = 128 | 256 | 1024 | 4 | 8 | 2048
+        net = base | 16384 | 1 | 4096 | 32 | 16 | 512
+        sources = ["Blu-ray", "NET", "TV Audio"]
+        def receiver(features, source_list=sources):
+            self.runtime.groups = lambda: [DeviceGroup("denon", "Home Theater", entities=[
+                Entity("media_player.home_theater", "Home Theater", True, features,
+                       {"source_list": source_list}, platform="denonavr")])]
+        with patch("custom_components.melodious.persistent_notification"), \
+                patch("custom_components.melodious.async_call_later") as later:
+            receiver(net)
+            await self.runtime.async_push()
+            self.assertEqual(client.commit.await_count, 1)
+            for features in (base, net, base, net, base):
+                receiver(features)
+                self.runtime._schedule_push_if_changed()
+                await self.runtime.async_push()
+            later.assert_not_called()
+            self.assertEqual(client.commit.await_count, 1)
+            # A source the receiver didn't have before is a real change.
+            receiver(base, sources + ["Game"])
+            self.runtime._schedule_push_if_changed()
+            self.assertEqual(later.call_count, 1)
+            self.runtime._timer = None
+            await self.runtime.async_push()
+            self.assertEqual(client.commit.await_count, 2)
+            names = [c["name"] for c in client.commit.await_args.args[0]["devices"][0]["commands"]]
+            self.assertEqual(names[-1], "Input Game")
+
     def test_build_includes_singles_beside_merged_devices(self):
         # Issue #162: _build used to return only the merged set whenever a
         # whole device was configured, dropping every single entity.

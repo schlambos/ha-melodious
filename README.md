@@ -13,8 +13,10 @@ It also works the other way round: the hub appears in Home Assistant as a `remot
 
 ## Install
 
-1. In HACS: ⋮ → **Custom repositories** → add `https://github.com/schlambos/ha-melodious` with type **Integration**.
-2. Download **Melodious**, then restart Home Assistant.
+1. Add `https://github.com/schlambos/ha-melodious` as a custom repository:
+   - Home Assistant 2026.11 or newer, where HACS is built in as the Marketplace: **Settings → Marketplace → Add from link**, enter the URL, then **Add**.
+   - Older versions, in HACS: ⋮ → **Custom repositories** → add the URL with type **Integration**.
+2. Install **Melodious**, then restart Home Assistant.
 3. **Settings → Devices & services → Add integration → Melodious.** Give:
    - the hub's address and web port (8080);
    - its web UI login, if it has one;

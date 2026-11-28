@@ -172,7 +172,8 @@ class DeviceSetTests(unittest.TestCase):
         off = tv(source_list=None)
         self.assertEqual(devices.build_device_set(WEBHOOK, [off], previous), first)
         more = devices.build_device_set(WEBHOOK, [tv(source_list=["HDMI 3"])], previous)["devices"][0]
-        self.assertEqual([i["name"] for i in more["inputs"]], ["HDMI 3", "HDMI 1", "HDMI 2", "Netflix"])
+        # A new input goes after the ones already sent (HA#27).
+        self.assertEqual([i["name"] for i in more["inputs"]], ["HDMI 1", "HDMI 2", "Netflix", "HDMI 3"])
 
     def test_every_set_passes_the_hub_rules(self):
         entities = [tv(source_list=[f"Source {n}" for n in range(40)])] + [
@@ -1003,6 +1004,125 @@ class NewShapeCoverageTests(unittest.TestCase):
                 self.assertNotRegex(
                     c["name"], r"^(DPAD_|KEYCODE_|send_command|button|select_option|turn_on)")
                 self.assertNotIn(c["name"], ("ENTER", "DPAD_CENTER", "KEYCODE_DPAD_CENTER"))
+
+
+# HA#27: a denonavr receiver reports transport features only on a NET input.
+DENON_BASE = (
+    devices.MP_TURN_ON | devices.MP_TURN_OFF | devices.MP_VOLUME_STEP | devices.MP_VOLUME_SET
+    | devices.MP_VOLUME_MUTE | devices.MP_SELECT_SOURCE
+)
+DENON_NET = (
+    DENON_BASE | devices.MP_PLAY | devices.MP_PAUSE | devices.MP_STOP
+    | devices.MP_NEXT_TRACK | devices.MP_PREVIOUS_TRACK | 512  # PLAY_MEDIA
+)
+DENON_SOURCES = ["Blu-ray", "Bluetooth", "NET", "TV Audio"]
+
+
+def denon(features, sources=DENON_SOURCES):
+    return Entity("media_player.home_theater", "Home Theater", True, features,
+                  {"source_list": list(sources)}, platform="denonavr")
+
+
+def previous_index(sent):
+    """The last sent set indexed the way MelodiousRuntime._previous does."""
+    previous = {}
+    for device in (sent or {}).get("devices", []):
+        if device.get("key"):
+            previous.setdefault(device["key"], device)
+            for item in device.get("entities", []):
+                previous.setdefault(item["entity"], device)
+        elif device.get("entity"):
+            previous.setdefault(device["entity"], device)
+    return previous
+
+
+class StableOrderTests(unittest.TestCase):
+    """HA#27: an unchanged device is never re-pushed (each push makes the remote sync)."""
+
+    def pushes(self, states, merged=True, disabled=None):
+        sent, count = None, 0
+        for entity in states:
+            if merged:
+                device_set, _ = devices.build_merged_set(
+                    WEBHOOK, [group("denon", "Home Theater", [entity])], {},
+                    {"denon": disabled} if disabled else {}, previous_index(sent))
+            else:
+                device_set = devices.build_device_set(WEBHOOK, [entity], previous_index(sent))
+            if device_set != sent:
+                count += 1
+                sent = device_set
+        return count, sent
+
+    def test_receiver_input_changes_never_repush(self):
+        # The reporter's sequence: TV Audio and NET (HEOS) back and forth.
+        for merged in (True, False):
+            for first in (DENON_NET, DENON_BASE):
+                with self.subTest(merged=merged, first=first):
+                    states = [denon(f) for f in (first, DENON_BASE, DENON_NET, DENON_BASE,
+                                                 DENON_NET, DENON_BASE)]
+                    count, _ = self.pushes(states, merged)
+                    # Starting on TV Audio, the first NET adds the transport commands once.
+                    self.assertEqual(count, 1 if first == DENON_NET else 2)
+
+    def test_transport_commands_keep_their_first_sent_position(self):
+        _, sent = self.pushes([denon(DENON_NET), denon(DENON_BASE)])
+        names = [c["name"] for c in sent["devices"][0]["commands"]]
+        self.assertEqual(names.index("Play") + 1, names.index("Pause"))
+        self.assertLess(names.index("SkipBack"), names.index("Input Blu-ray"))
+
+    def test_source_list_reorder_or_subset_never_repushes(self):
+        # A receiver mid-transition can report a shorter or reshuffled source list.
+        for merged in (True, False):
+            with self.subTest(merged=merged):
+                states = [denon(DENON_BASE), denon(DENON_BASE, ["TV Audio", "NET"]),
+                          denon(DENON_BASE, list(reversed(DENON_SOURCES))), denon(DENON_BASE)]
+                count, sent = self.pushes(states, merged)
+                self.assertEqual(count, 1)
+                self.assertEqual([i["name"] for i in sent["devices"][0]["inputs"]], DENON_SOURCES)
+
+    def test_merge_keeps_previous_input_order_and_takes_current_values(self):
+        previous = {
+            "entity": "media_player.amp", "name": "Amp",
+            "commands": [{"name": "Input A", "value": "select_source:A"},
+                         {"name": "Input B", "value": "select_source:B"},
+                         {"name": "Mute", "value": "mute"}],
+            "inputs": [{"name": "A", "command": "Input A"}, {"name": "B", "command": "Input B"}],
+        }
+        current = {
+            "entity": "media_player.amp", "name": "Amp",
+            "commands": [{"name": "Input C", "value": "select_source:C"},
+                         {"name": "Mute", "value": "volume_mute"},
+                         {"name": "Input B", "value": "select_source:B"}],
+            "inputs": [{"name": "C", "command": "Input C"}, {"name": "B", "command": "Input B"}],
+        }
+        merged = devices._merge(current, previous)
+        self.assertEqual(merged["commands"], [
+            {"name": "Input A", "value": "select_source:A"},
+            {"name": "Input B", "value": "select_source:B"},
+            {"name": "Mute", "value": "volume_mute"},
+            {"name": "Input C", "value": "select_source:C"},
+        ])
+        self.assertEqual([i["name"] for i in merged["inputs"]], ["A", "B", "C"])
+
+    def test_a_new_source_still_pushes_and_is_appended(self):
+        for merged in (True, False):
+            with self.subTest(merged=merged):
+                states = [denon(DENON_NET), denon(DENON_BASE),
+                          denon(DENON_BASE, DENON_SOURCES + ["Game"])]
+                count, sent = self.pushes(states, merged)
+                self.assertEqual(count, 2)
+                device = sent["devices"][0]
+                self.assertEqual(device["commands"][-1]["name"], "Input Game")
+                self.assertEqual(device["inputs"][-1]["name"], "Game")
+
+    def test_a_disabled_command_still_pushes(self):
+        _, sent = self.pushes([denon(DENON_NET), denon(DENON_BASE)])
+        previous = previous_index(sent)
+        device_set, _ = devices.build_merged_set(
+            WEBHOOK, [group("denon", "Home Theater", [denon(DENON_BASE)])], {},
+            {"denon": {"Play"}}, previous)
+        self.assertNotEqual(device_set, sent)
+        self.assertNotIn("Play", [c["name"] for c in device_set["devices"][0]["commands"]])
 
 
 class HubSeedTests(unittest.TestCase):
